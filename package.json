@@ -1,9 +1,9 @@
 {
   "name": "princejs",
-  "version": "1.1.1",
+  "version": "1.2.1",
   "description": "An easy and fast backend framework — by a 13yo developer, for developers.",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "dist/prince.js",
+  "types": "dist/prince.d.ts",
   "files": [
     "dist"
   ],
@@ -22,7 +22,6 @@
   "author": "Matthew Micheal",
   "license": "MIT",
   "repository": "https://github.com/MatthewTheCoder1218/princejs",
-  "homepage": "https://github.com/MatthewTheCoder1218/princejs",
   "publishConfig": {
     "access": "public"
   },
