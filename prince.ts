@@ -6,9 +6,6 @@ export class Prince {
   private routes = Object.create(null) as Record<string, Record<string, (req: Request) => any>>;
   private middlewares: Middleware[] = [];
 
-  // added: minimal dynamic route store for params
-  private dynamicRoutes: { segments: string[]; methods: Record<string, (req: Request) => any> }[] = [];
-
   use(middleware: Middleware) {
     this.middlewares.push(middleware);
     return this;
@@ -41,61 +38,9 @@ export class Prince {
   head(path: string, handler: any) { return this.add("HEAD", path, handler); }
 
   private add(method: string, path: string, handler: any) {
-    // if dynamic (contains :), register in dynamicRoutes
-    if (path.indexOf(':') !== -1) {
-      const segments = path.split('/').filter(Boolean);
-      // try to reuse existing pattern entry
-      for (let i = 0; i < this.dynamicRoutes.length; i++) {
-        const r = this.dynamicRoutes[i];
-        if (r.segments.length === segments.length && r.segments.every((s, idx) => s === segments[idx])) {
-          r.methods[method] = handler;
-          return this;
-        }
-      }
-      this.dynamicRoutes.push({ segments, methods: { [method]: handler } });
-      return this;
-    }
-
     this.routes[path] ??= Object.create(null);
     this.routes[path][method] = handler;
     return this;
-  }
-
-  // new helper: find handler and params (static first, then dynamic)
-  private findHandler(path: string, method: string): { handler?: any; params: Record<string,string> } {
-    // static exact match
-    const staticRoute = this.routes[path];
-    const staticHandler = staticRoute?.[method] ?? staticRoute?.["GET"];
-    if (staticHandler) return { handler: staticHandler, params: Object.create(null) };
-
-    // dynamic routes
-    const reqSegs = path.split('/').filter(Boolean);
-    for (let i = 0; i < this.dynamicRoutes.length; i++) {
-      const r = this.dynamicRoutes[i];
-      if (r.segments.length !== reqSegs.length) continue;
-      const params: Record<string,string> = Object.create(null);
-      let ok = true;
-      for (let j = 0; j < r.segments.length; j++) {
-        const seg = r.segments[j];
-        const reqSeg = reqSegs[j];
-        if (!reqSeg) { ok = false; break; }
-        if (seg[0] === ':') {
-          try {
-            params[seg.slice(1)] = decodeURIComponent(reqSeg);
-          } catch {
-            params[seg.slice(1)] = reqSeg;
-          }
-        } else if (seg !== reqSeg) {
-          ok = false;
-          break;
-        }
-      }
-      if (!ok) continue;
-      const h = r.methods[method] ?? r.methods["GET"];
-      if (h) return { handler: h, params };
-    }
-
-    return { handler: undefined, params: Object.create(null) };
   }
 
   listen(port = 3000) {
@@ -108,20 +53,13 @@ export class Prince {
       fetch: async (req) => {
         try {
           const url = req.url;
-          // fast path extraction
-          const pathStart = url.indexOf('/', 8);
-          const pathEnd = url.indexOf('?', pathStart);
-          const path = pathStart === -1 ? '/' : (pathEnd === -1 ? url.slice(pathStart) : url.slice(pathStart, pathEnd));
-
-          // use new finder
-          const { handler, params } = this.findHandler(path, req.method);
+          const path = url.slice(url.indexOf('/', 8));
+          const route = routes[path];
+          const handler = route?.[req.method] ?? route?.["GET"];
 
           if (!handler) {
             return this.json({ error: "Route not found" }, 404);
           }
-
-          // attach params
-          (req as any).params = params;
 
           if (!mwLen) {
             const result = await handler(req);
