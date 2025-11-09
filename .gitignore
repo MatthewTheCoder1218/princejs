@@ -1,1 +1,63 @@
 node_modules
+dist
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.*.local
+.env.production
+.env.test
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+pnpm-debug.log.*
+*.log
+
+# Build / cache
+build
+out
+coverage
+.nyc_output
+.cache
+.parcel-cache
+.cache/
+.vite
+dist/
+tmp/
+temp/
+
+# TypeScript
+*.tsbuildinfo
+
+# Editor / IDE
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# Dependency managers (keep lock files committed; ignore package manager caches)
+.pnpm-store/
+.pnp.*
+node_modules/
+
+# Test / tooling
+jest.config.ts
+jest-*.json
+coverage/
+
+# Misc
+*.tmp
+*.swp
+*.swo
+.history
+
+# Bun: do NOT ignore bun.lockb unless you intentionally want to (committing recommended)
+# If you *do* want to ignore bun.lockb, uncomment the next line:
+# bun.lockb
