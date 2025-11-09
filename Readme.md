@@ -1,13 +1,13 @@
 # PrinceJS
 
-**The fastest backend framework ever made by a 13-year-old Nigerian.**  
-**Under 2 kB • Beats Hono • Built in 3 days**
-PrinceJS: 24k–44k RPS (Windows laptop)
-Hono:     20k–40k RPS
-Express:  ~7k RPS
-text**Size:** **1.97 kB** (minified)  
-**Lines:** **150**  
-**Runtime:** Bun only
+**The fastest backend framework ever made by a 13-year-old Nigerian.**  <br>
+**Under 2 kB • Beats Hono • Built in 3 days** <br>
+PrinceJS: 24k–44k RPS (Windows laptop) <br>
+Hono:     20k–40k RPS <br>
+Express:  ~7k RPS <br>
+**Size:** **1.97 kB** (minified)  <br>
+**Lines:** **150**  <br>
+**Runtime:** Bun only <br>
 
 ---
 
@@ -19,9 +19,12 @@ pnpm add princejs
 bun add princejs
 # or
 npm install princejs
+```
 
-Quick Start
-tsimport { Prince } from 'princejs';
+### Quick Start
+
+```bash
+import { Prince } from 'princejs';
 
 const app = new Prince();
 
@@ -46,8 +49,9 @@ app.post('/pay', async (req) => {
 });
 
 app.listen(3000);
+```
 
-Features
+### Features
 
 All HTTP methods (GET POST PUT DELETE PATCH OPTIONS HEAD)
 app.json(data, status?) — clean JSON with status
@@ -76,4 +80,7 @@ GitHub: https://github.com/MatthewTheCoder1218/princejs
 
 
 PrinceJS — Small. Fast. Unbeatable.
-bashpnpm add princejs
+
+```bash
+pnpm add princejs
+```
