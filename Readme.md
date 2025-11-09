@@ -1,7 +1,7 @@
 # PrinceJS
 
 **The fastest backend framework ever made.**  <br>
-**Under 2 kB • Beats Hono • Built in 3 days** <br>
+**Under 5 kB • Beats Hono • Built in 3 days** <br>
 
 ---
 
@@ -57,7 +57,7 @@ app.error(handler) — global error handling
 
 ### Benchmarks (real Windows laptop)
 ```bash
-PrinceJS: 24k–44k requests in 10s
+PrinceJS: 24k–47k requests in 10s
 Hono:     20k–40k requests in 10s
 Express:  ~7k requests in 10s
 ```
@@ -65,7 +65,7 @@ Express:  ~7k requests in 10s
 Same code. Same features. Same machine.
 
 ### Author
-Matthew Micheal — Age 13 — Nigeria
+Matthew Micheal — Nigeria
 
 Made in PowerShell on a school laptop.
 
