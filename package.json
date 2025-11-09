@@ -1,0 +1,33 @@
+{
+  "name": "princejs",
+  "version": "1.0.0",
+  "description": "An easy and fast backend framework — by a 13yo developer, for developers.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "bun build prince.ts --outdir dist --target bun",
+    "prepublishOnly": "pnpm build"
+  },
+  "keywords": [
+    "backend",
+    "api",
+    "framework",
+    "bun",
+    "easy",
+    "princejs"
+  ],
+  "author": "Matthew Micheal",
+  "license": "MIT",
+  "repository": "https://github.com/MatthewTheCoder1218/princejs",
+  "homepage": "https://github.com/MatthewTheCoder1218/princejs",
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.2",
+    "bun-types": "latest"
+  }
+}
