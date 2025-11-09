@@ -1,6 +1,6 @@
 # PrinceJS
 
-**The fastest backend framework ever made by a 13-year-old Nigerian.**  <br>
+**The fastest backend framework ever made.**  <br>
 **Under 2 kB • Beats Hono • Built in 3 days** <br>
 
 ---
