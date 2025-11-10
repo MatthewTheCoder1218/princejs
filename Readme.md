@@ -1,7 +1,7 @@
 # PrinceJS
 
 **The fastest backend framework ever made.**  <br>
-**Under 5 kB • Beats Hono and Express • Built in 3 days** <br>
+**Beats Hono and Express • Built in 3 days** <br>
 
 ---
 
