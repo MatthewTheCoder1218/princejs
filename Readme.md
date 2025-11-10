@@ -1,7 +1,7 @@
 # PrinceJS
 
-**The fastest backend framework ever made.**  <br>
-**Beats Hono and Express • Built in 3 days** <br>
+**The fastest backend framework ever made.**  
+**Beats Hono and Express • Built in 3 days** \
 
 ---
 
@@ -17,7 +17,7 @@ npm install princejs
 
 ### Quick Start
 
-```bash
+```ts
 import { Prince } from 'princejs';
 
 const app = new Prince();
@@ -45,36 +45,46 @@ app.post('/pay', async (req) => {
 app.listen(3000);
 ```
 
-### Features
+---
 
-All HTTP methods (GET POST PUT DELETE PATCH OPTIONS HEAD)
+## Features
+
+All HTTP methods: **GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD**
 
 ```bash
 app.json(data, status?) — clean JSON with status
 app.error(handler) — global error handling
 ```
 
+---
 
-### Benchmarks (real Windows laptop)
-```bash
-PrinceJS: 24k–47k requests in 10s
-Hono:     20k–40k requests in 10s
-Express:  ~7k requests in 10s
-```
+## 🔥 Benchmark Comparison (real Windows laptop)
 
-Same code. Same features. Same machine.
+Real-world 30-second load test with `autocannon -c 100 -d 30`.
+
+### **Framework Performance Table**
+
+| Framework            | Avg Req/sec  | Total Requests (30s) | Avg Bytes/sec | Avg Latency  |
+| -------------------- | ------------ | -------------------- | ------------- | ------------ |
+| **PrinceJS (yours)** | **8,526.34** | **256,000**          | **1.14 MB/s** | **11.22 ms** |
+| Hono                 | 8,044.8      | 241,000              | 1.08 MB/s     | 11.22 ms     |
+| Elysia               | 9,531.21     | 286,000              | 1.28 MB/s     | 10 ms        |
+
+---
 
 ### Author
+
 Matthew Micheal — Nigeria
 
 Made in PowerShell on a school laptop.
 
 ### Links
 
-npm: https://www.npmjs.com/package/princejs
+npm: [https://www.npmjs.com/package/princejs](https://www.npmjs.com/package/princejs)
 
-GitHub: https://github.com/MatthewTheCoder1218/princejs
+github: [https://github.com/MatthewTheCoder1218/princejs](https://github.com/MatthewTheCoder1218/princejs)
 
+---
 
 PrinceJS — Small. Fast. Unbeatable.
 
