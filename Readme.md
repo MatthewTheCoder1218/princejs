@@ -66,7 +66,7 @@ Real-world 30-second load test with `autocannon -c 100 -d 30`.
 
 | Framework            | Avg Req/sec  | Total Requests (30s) | Avg Bytes/sec | Avg Latency  |
 | -------------------- | ------------ | -------------------- | ------------- | ------------ |
-| **PrinceJS (yours)** | **8,526.34** | **256,000**          | **1.14 MB/s** | **11.22 ms** |
+| **PrinceJS** | **8,526.34** | **256,000**          | **1.14 MB/s** | **11.22 ms** |
 | Hono                 | 8,044.8      | 241,000              | 1.08 MB/s     | 11.22 ms     |
 | Elysia               | 9,531.21     | 286,000              | 1.28 MB/s     | 10 ms        |
 
