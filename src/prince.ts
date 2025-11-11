@@ -1,4 +1,7 @@
-﻿type Next = () => Promise<Response>;
+﻿import { cors, logger, rateLimit } from "./middleware";
+import { validate } from "./validation";
+
+type Next = () => Promise<Response>;
 type Middleware = (req: Request, next: Next) => Promise<Response | undefined> | Response | undefined;
 type HandlerResult = Response | Record<string, any> | string | Uint8Array;
 
@@ -68,6 +71,24 @@ export class Prince {
   private prefix = "";
 
   constructor(private devMode = false) {}
+  useCors(options?: { origin?: string; methods?: string; headers?: string; credentials?: boolean }) {
+    this.use(cors(options));
+    return this;
+  }
+
+  useLogger(options?: { format?: "dev" | "combined" | "tiny"; colors?: boolean }) {
+    this.use(logger(options));
+    return this;
+  }
+
+  useRateLimit(options: { max: number; window: number; message?: string }) {
+    this.use(rateLimit(options));
+    return this;
+  }
+
+  validate<T>(schema: import("zod").ZodSchema<T>, source: "body" | "query" | "params" = "body") {
+    return validate(schema, source);
+  }
 
   use(mw: Middleware) { this.middlewares.push(mw); return this; }
   error(fn: (err: any, req: Request) => Response) { this.errorHandler = fn; return this; }

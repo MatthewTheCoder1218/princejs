@@ -1,6 +1,6 @@
 {
   "name": "princejs",
-  "version": "1.3.5",
+  "version": "1.3.6",
   "description": "An easy and fast backend framework — by a 13yo developer, for developers.",
   "main": "dist/prince.js",
   "types": "dist/prince.d.ts",
@@ -8,7 +8,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "bun build ./src/prince.ts ./src/middleware.ts ./src/validation.ts --outdir dist --target bun",
+    "build": "bun build ./src/prince.ts --outdir dist --target bun",
     "prepublishOnly": "pnpm build"
   },
   "keywords": [
