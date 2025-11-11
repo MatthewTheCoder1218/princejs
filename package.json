@@ -8,7 +8,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "bun build prince.ts --outdir dist --target bun",
+    "build": "bun build ./src/prince.ts --outdir dist --target bun",
     "prepublishOnly": "pnpm build"
   },
   "keywords": [
