@@ -28,5 +28,8 @@
   "devDependencies": {
     "@types/bun": "^1.3.2",
     "bun-types": "latest"
+  },
+  "dependencies": {
+    "zod": "^4.1.12"
   }
 }

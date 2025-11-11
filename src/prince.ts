@@ -1,7 +1,15 @@
 ﻿type Next = () => Promise<Response>;
 type Middleware = (req: Request, next: Next) => Promise<Response | undefined> | Response | undefined;
 type HandlerResult = Response | Record<string, any> | string | Uint8Array;
-type RouteHandler = (req: Request, params: Record<string,string>) => Promise<HandlerResult> | HandlerResult;
+
+interface PrinceRequest extends Request {
+  params: Record<string, string>;
+  query: Record<string, string>;
+  body?: any;
+  headers: Headers;
+}
+
+type RouteHandler = (req: PrinceRequest) => Promise<HandlerResult> | HandlerResult;
 
 type RouteEntry = {
   method: string;
@@ -18,10 +26,46 @@ class TrieNode {
   handlers: Record<string, RouteHandler> | null = null;
 }
 
+class ResponseBuilder {
+  private _status = 200;
+  private _headers: Record<string, string> = {};
+  private _body: any = null;
+
+  status(code: number) { this._status = code; return this; }
+  header(key: string, value: string) { this._headers[key] = value; return this; }
+  json(data: any) {
+    this._headers["Content-Type"] = "application/json";
+    this._body = JSON.stringify(data);
+    return this.build();
+  }
+  text(data: string) {
+    this._headers["Content-Type"] = "text/plain";
+    this._body = data;
+    return this.build();
+  }
+  html(data: string) {
+    this._headers["Content-Type"] = "text/html";
+    this._body = data;
+    return this.build();
+  }
+  redirect(url: string, status = 302) {
+    this._status = status;
+    this._headers["Location"] = url;
+    return this.build();
+  }
+  build() {
+    return new Response(this._body, {
+      status: this._status,
+      headers: this._headers
+    });
+  }
+}
+
 export class Prince {
   private rawRoutes: RouteEntry[] = [];
   private middlewares: Middleware[] = [];
   private errorHandler?: (err: any, req: Request) => Response;
+  private prefix = "";
 
   constructor(private devMode = false) {}
 
@@ -33,6 +77,36 @@ export class Prince {
       status,
       headers: { "Content-Type": "application/json" }
     });
+  }
+
+  response() { return new ResponseBuilder(); }
+
+  route(path: string) {
+    const group = new Prince(this.devMode);
+    group.prefix = path;
+    group.middlewares = [...this.middlewares];
+    return {
+      get: (subpath: string, handler: RouteHandler) => {
+        this.get(path + subpath, handler);
+        return group;
+      },
+      post: (subpath: string, handler: RouteHandler) => {
+        this.post(path + subpath, handler);
+        return group;
+      },
+      put: (subpath: string, handler: RouteHandler) => {
+        this.put(path + subpath, handler);
+        return group;
+      },
+      delete: (subpath: string, handler: RouteHandler) => {
+        this.delete(path + subpath, handler);
+        return group;
+      },
+      patch: (subpath: string, handler: RouteHandler) => {
+        this.patch(path + subpath, handler);
+        return group;
+      }
+    };
   }
 
   get(path: string, handler: RouteHandler) { return this.add("GET", path, handler); }
@@ -62,13 +136,54 @@ export class Prince {
     return u.slice(start, end);
   }
 
+  private parseQuery(url: string): Record<string, string> {
+    const q = url.indexOf("?");
+    if (q === -1) return {};
+    
+    const query: Record<string, string> = {};
+    const search = url.slice(q + 1);
+    const pairs = search.split("&");
+    
+    for (let i = 0; i < pairs.length; i++) {
+      const pair = pairs[i];
+      const eq = pair.indexOf("=");
+      if (eq === -1) {
+        query[decodeURIComponent(pair)] = "";
+      } else {
+        query[decodeURIComponent(pair.slice(0, eq))] = decodeURIComponent(pair.slice(eq + 1));
+      }
+    }
+    return query;
+  }
+
+  private async parseBody(req: Request): Promise<any> {
+    const ct = req.headers.get("content-type") || "";
+    
+    if (ct.includes("application/json")) {
+      return await req.json();
+    }
+    if (ct.includes("application/x-www-form-urlencoded")) {
+      const text = await req.text();
+      const params: Record<string, string> = {};
+      const pairs = text.split("&");
+      for (const pair of pairs) {
+        const [key, val] = pair.split("=");
+        params[decodeURIComponent(key)] = decodeURIComponent(val || "");
+      }
+      return params;
+    }
+    if (ct.includes("text/")) {
+      return await req.text();
+    }
+    return null;
+  }
+
   private buildRouter() {
     const root = new TrieNode();
     for (const route of this.rawRoutes) {
       let node = root;
       const parts = route.parts;
       
-      // Handle root route specially
       if (parts.length === 1 && parts[0] === "") {
         if (!node.handlers) node.handlers = Object.create(null);
         node.handlers[route.method] = route.handler;
@@ -78,7 +193,10 @@ export class Prince {
       for (let i = 0; i < parts.length; i++) {
         const part = parts[i];
         if (part === "**") {
-          node.catchAllChild ??= { node: new TrieNode() };
+          // FIX 2: Properly assign name to catchAllChild
+          if (!node.catchAllChild) {
+            node.catchAllChild = { name: "**", node: new TrieNode() };
+          }
           node = node.catchAllChild.node;
           break;
         } else if (part === "*") {
@@ -99,23 +217,50 @@ export class Prince {
     return root;
   }
 
-  private compilePipeline(handler: RouteHandler, paramsFromMatch: (req: Request)=>Record<string,string>) {
+  private compilePipeline(handler: RouteHandler, paramsGetter: (req: Request) => Record<string, string>) {
     const mws = this.middlewares.slice();
-    return async (req: Request) => {
+    const hasMiddleware = mws.length > 0;
+    
+    if (!hasMiddleware) {
+      return async (req: Request, params: Record<string, string>, query: Record<string, string>) => {
+        const princeReq = req as PrinceRequest;
+        princeReq.params = params;
+        princeReq.query = query;
+        
+        if (req.method === "POST" || req.method === "PUT" || req.method === "PATCH") {
+          princeReq.body = await this.parseBody(req);
+        }
+        
+        const res = await handler(princeReq);
+        if (res instanceof Response) return res;
+        if (typeof res === "string") return new Response(res, { status: 200 });
+        if (res instanceof Uint8Array || res instanceof ArrayBuffer) return new Response(res as any, { status: 200 });
+        return this.json(res);
+      };
+    }
+    
+    return async (req: Request, params: Record<string, string>, query: Record<string, string>) => {
+      const princeReq = req as PrinceRequest;
+      princeReq.params = params;
+      princeReq.query = query;
+      
       let idx = 0;
       const runNext = async (): Promise<Response | undefined> => {
         if (idx >= mws.length) {
-          const params = paramsFromMatch(req);
-          const res = await handler(req, params);
+          if (req.method === "POST" || req.method === "PUT" || req.method === "PATCH") {
+            princeReq.body = await this.parseBody(req);
+          }
+          
+          const res = await handler(princeReq);
           if (res instanceof Response) return res;
           if (typeof res === "string") return new Response(res, { status: 200 });
           if (res instanceof Uint8Array || res instanceof ArrayBuffer) return new Response(res as any, { status: 200 });
           return this.json(res);
         }
         const mw = mws[idx++];
-        const maybe = await mw(req, runNext);
-        return maybe;
+        return await mw(req, runNext);
       };
+      
       const out = await runNext();
       if (out instanceof Response) return out;
       if (out !== undefined) {
@@ -129,19 +274,19 @@ export class Prince {
 
   listen(port = 3000) {
     const root = this.buildRouter();
-    const handlerMap = new Map<TrieNode, Record<string, (req: Request)=>Promise<Response>>>();
+    const handlerMap = new Map<TrieNode, Record<string, any>>();
 
     Bun.serve({
       port,
       fetch: async (req: Request) => {
         try {
           const pathname = this.fastPathname(req);
+          const query = this.parseQuery(req.url);
           const segments = pathname === "/" ? [] : pathname.slice(1).split("/");
           let node: TrieNode | undefined = root;
-          const params: Record<string,string> = Object.create(null);
+          const params: Record<string, string> = {};
           let matched = true;
 
-          // Handle root path specially
           if (segments.length === 0) {
             if (!node.handlers) return this.json({ error: "Route not found" }, 404);
             const handler = node.handlers[req.method];
@@ -149,7 +294,7 @@ export class Prince {
 
             let methodMap = handlerMap.get(node);
             if (!methodMap) { 
-              methodMap = Object.create(null); 
+              methodMap = {};
               handlerMap.set(node, methodMap); 
             }
             
@@ -157,12 +302,11 @@ export class Prince {
               methodMap[req.method] = this.compilePipeline(handler, (_) => params);
             }
 
-            return await methodMap[req.method](req);
+            return await methodMap[req.method](req, params, query);
           }
 
           for (let i = 0; i < segments.length; i++) {
             const seg = segments[i];
-            if (!node) { matched = false; break; }
             if (node.children[seg]) { node = node.children[seg]; continue; }
             if (node.paramChild) { params[node.paramChild.name] = seg; node = node.paramChild.node; continue; }
             if (node.wildcardChild) { node = node.wildcardChild; continue; }
@@ -170,22 +314,21 @@ export class Prince {
               const remaining = segments.slice(i).join("/");
               if (node.catchAllChild.name) params[node.catchAllChild.name] = remaining;
               node = node.catchAllChild.node;
-              i = segments.length;
               break;
             }
+            // No match found
             matched = false;
             break;
           }
 
+          // FIX 3: Check !node after the loop
           if (!matched || !node || !node.handlers) return this.json({ error: "Route not found" }, 404);
-          const byMethod = node.handlers;
-          const handler = byMethod[req.method] ?? byMethod["GET"];
+          const handler = node.handlers[req.method];
           if (!handler) return this.json({ error: "Method not allowed" }, 405);
 
-          // Lazily compile and cache the pipeline for this method
           let methodMap = handlerMap.get(node);
           if (!methodMap) { 
-            methodMap = Object.create(null); 
+            methodMap = {};
             handlerMap.set(node, methodMap); 
           }
           
@@ -193,7 +336,7 @@ export class Prince {
             methodMap[req.method] = this.compilePipeline(handler, (_) => params);
           }
 
-          return await methodMap[req.method](req);
+          return await methodMap[req.method](req, params, query);
         } catch (err) {
           if (this.errorHandler) {
             try { return this.errorHandler(err, req); } catch {}
@@ -203,7 +346,7 @@ export class Prince {
       }
     });
 
-    console.log(`PrinceJS v2 running at http://localhost:${port}`);
+    console.log(`🚀 PrinceJS running at http://localhost:${port}`);
   }
 }
 
