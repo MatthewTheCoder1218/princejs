@@ -1,7 +1,4 @@
-﻿import { cors, logger, rateLimit } from "./middleware";
-import { validate } from "./validation";
-
-type Next = () => Promise<Response>;
+﻿type Next = () => Promise<Response>;
 type Middleware = (req: Request, next: Next) => Promise<Response | undefined> | Response | undefined;
 type HandlerResult = Response | Record<string, any> | string | Uint8Array;
 
@@ -34,28 +31,40 @@ class ResponseBuilder {
   private _headers: Record<string, string> = {};
   private _body: any = null;
 
-  status(code: number) { this._status = code; return this; }
-  header(key: string, value: string) { this._headers[key] = value; return this; }
+  status(code: number) {
+    this._status = code;
+    return this;
+  }
+
+  header(key: string, value: string) {
+    this._headers[key] = value;
+    return this;
+  }
+
   json(data: any) {
     this._headers["Content-Type"] = "application/json";
     this._body = JSON.stringify(data);
     return this.build();
   }
+
   text(data: string) {
     this._headers["Content-Type"] = "text/plain";
     this._body = data;
     return this.build();
   }
+
   html(data: string) {
     this._headers["Content-Type"] = "text/html";
     this._body = data;
     return this.build();
   }
+
   redirect(url: string, status = 302) {
     this._status = status;
     this._headers["Location"] = url;
     return this.build();
   }
+
   build() {
     return new Response(this._body, {
       status: this._status,
@@ -71,27 +80,16 @@ export class Prince {
   private prefix = "";
 
   constructor(private devMode = false) {}
-  useCors(options?: { origin?: string; methods?: string; headers?: string; credentials?: boolean }) {
-    this.use(cors(options));
+
+  use(mw: Middleware) {
+    this.middlewares.push(mw);
     return this;
   }
 
-  useLogger(options?: { format?: "dev" | "combined" | "tiny"; colors?: boolean }) {
-    this.use(logger(options));
+  error(fn: (err: any, req: Request) => Response) {
+    this.errorHandler = fn;
     return this;
   }
-
-  useRateLimit(options: { max: number; window: number; message?: string }) {
-    this.use(rateLimit(options));
-    return this;
-  }
-
-  validate<T>(schema: import("zod").ZodSchema<T>, source: "body" | "query" | "params" = "body") {
-    return validate(schema, source);
-  }
-
-  use(mw: Middleware) { this.middlewares.push(mw); return this; }
-  error(fn: (err: any, req: Request) => Response) { this.errorHandler = fn; return this; }
 
   json(data: any, status = 200) {
     return new Response(JSON.stringify(data), {
@@ -100,7 +98,9 @@ export class Prince {
     });
   }
 
-  response() { return new ResponseBuilder(); }
+  response() {
+    return new ResponseBuilder();
+  }
 
   route(path: string) {
     const group = new Prince(this.devMode);
@@ -130,13 +130,33 @@ export class Prince {
     };
   }
 
-  get(path: string, handler: RouteHandler) { return this.add("GET", path, handler); }
-  post(path: string, handler: RouteHandler) { return this.add("POST", path, handler); }
-  put(path: string, handler: RouteHandler) { return this.add("PUT", path, handler); }
-  delete(path: string, handler: RouteHandler) { return this.add("DELETE", path, handler); }
-  patch(path: string, handler: RouteHandler) { return this.add("PATCH", path, handler); }
-  options(path: string, handler: RouteHandler) { return this.add("OPTIONS", path, handler); }
-  head(path: string, handler: RouteHandler) { return this.add("HEAD", path, handler); }
+  get(path: string, handler: RouteHandler) {
+    return this.add("GET", path, handler);
+  }
+
+  post(path: string, handler: RouteHandler) {
+    return this.add("POST", path, handler);
+  }
+
+  put(path: string, handler: RouteHandler) {
+    return this.add("PUT", path, handler);
+  }
+
+  delete(path: string, handler: RouteHandler) {
+    return this.add("DELETE", path, handler);
+  }
+
+  patch(path: string, handler: RouteHandler) {
+    return this.add("PATCH", path, handler);
+  }
+
+  options(path: string, handler: RouteHandler) {
+    return this.add("OPTIONS", path, handler);
+  }
+
+  head(path: string, handler: RouteHandler) {
+    return this.add("HEAD", path, handler);
+  }
 
   private add(method: string, path: string, handler: RouteHandler) {
     if (!path.startsWith("/")) path = "/" + path;
@@ -146,35 +166,20 @@ export class Prince {
     return this;
   }
 
-  private fastPathname(req: Request) {
-    const u = req.url;
-    const protoSep = u.indexOf("://");
-    const start = protoSep !== -1 ? u.indexOf("/", protoSep + 3) : u.indexOf("/");
-    if (start === -1) return "/";
-    const q = u.indexOf("?", start);
-    const h = u.indexOf("#", start);
-    const end = q !== -1 ? q : (h !== -1 ? h : u.length);
-    return u.slice(start, end);
-  }
-
-  private parseQuery(url: string): Record<string, string> {
-    const q = url.indexOf("?");
-    if (q === -1) return {};
-    
+  // Using Bun's native URL parsing (faster and cleaner!)
+  private parseUrl(req: Request): { pathname: string; query: Record<string, string> } {
+    const url = new URL(req.url);
     const query: Record<string, string> = {};
-    const search = url.slice(q + 1);
-    const pairs = search.split("&");
     
-    for (let i = 0; i < pairs.length; i++) {
-      const pair = pairs[i];
-      const eq = pair.indexOf("=");
-      if (eq === -1) {
-        query[decodeURIComponent(pair)] = "";
-      } else {
-        query[decodeURIComponent(pair.slice(0, eq))] = decodeURIComponent(pair.slice(eq + 1));
-      }
+    // Parse query params using URLSearchParams
+    for (const [key, value] of url.searchParams.entries()) {
+      query[key] = value;
     }
-    return query;
+    
+    return {
+      pathname: url.pathname,
+      query
+    };
   }
 
   private async parseBody(req: Request): Promise<any> {
@@ -205,6 +210,7 @@ export class Prince {
       let node = root;
       const parts = route.parts;
       
+      // Handle root route specially
       if (parts.length === 1 && parts[0] === "") {
         if (!node.handlers) node.handlers = Object.create(null);
         node.handlers[route.method] = route.handler;
@@ -214,7 +220,7 @@ export class Prince {
       for (let i = 0; i < parts.length; i++) {
         const part = parts[i];
         if (part === "**") {
-          // FIX 2: Properly assign name to catchAllChild
+          // FIX: Properly assign name to catchAllChild
           if (!node.catchAllChild) {
             node.catchAllChild = { name: "**", node: new TrieNode() };
           }
@@ -242,12 +248,14 @@ export class Prince {
     const mws = this.middlewares.slice();
     const hasMiddleware = mws.length > 0;
     
+    // Fast path: no middleware
     if (!hasMiddleware) {
       return async (req: Request, params: Record<string, string>, query: Record<string, string>) => {
         const princeReq = req as PrinceRequest;
         princeReq.params = params;
         princeReq.query = query;
         
+        // Parse body only for POST/PUT/PATCH
         if (req.method === "POST" || req.method === "PUT" || req.method === "PATCH") {
           princeReq.body = await this.parseBody(req);
         }
@@ -260,6 +268,7 @@ export class Prince {
       };
     }
     
+    // Slow path: with middleware
     return async (req: Request, params: Record<string, string>, query: Record<string, string>) => {
       const princeReq = req as PrinceRequest;
       princeReq.params = params;
@@ -268,6 +277,7 @@ export class Prince {
       let idx = 0;
       const runNext = async (): Promise<Response | undefined> => {
         if (idx >= mws.length) {
+          // Parse body only for POST/PUT/PATCH
           if (req.method === "POST" || req.method === "PUT" || req.method === "PATCH") {
             princeReq.body = await this.parseBody(req);
           }
@@ -301,24 +311,25 @@ export class Prince {
       port,
       fetch: async (req: Request) => {
         try {
-          const pathname = this.fastPathname(req);
-          const query = this.parseQuery(req.url);
+          // Use Bun's native URL parsing
+          const { pathname, query } = this.parseUrl(req);
           const segments = pathname === "/" ? [] : pathname.slice(1).split("/");
           let node: TrieNode | undefined = root;
           const params: Record<string, string> = {};
           let matched = true;
 
+          // Handle root path specially
           if (segments.length === 0) {
             if (!node.handlers) return this.json({ error: "Route not found" }, 404);
             const handler = node.handlers[req.method];
             if (!handler) return this.json({ error: "Method not allowed" }, 405);
 
             let methodMap = handlerMap.get(node);
-            if (!methodMap) { 
+            if (!methodMap) {
               methodMap = {};
-              handlerMap.set(node, methodMap); 
+              handlerMap.set(node, methodMap);
             }
-            
+
             if (!methodMap[req.method]) {
               methodMap[req.method] = this.compilePipeline(handler, (_) => params);
             }
@@ -326,11 +337,22 @@ export class Prince {
             return await methodMap[req.method](req, params, query);
           }
 
+          // Route matching
           for (let i = 0; i < segments.length; i++) {
             const seg = segments[i];
-            if (node.children[seg]) { node = node.children[seg]; continue; }
-            if (node.paramChild) { params[node.paramChild.name] = seg; node = node.paramChild.node; continue; }
-            if (node.wildcardChild) { node = node.wildcardChild; continue; }
+            if (node.children[seg]) {
+              node = node.children[seg];
+              continue;
+            }
+            if (node.paramChild) {
+              params[node.paramChild.name] = seg;
+              node = node.paramChild.node;
+              continue;
+            }
+            if (node.wildcardChild) {
+              node = node.wildcardChild;
+              continue;
+            }
             if (node.catchAllChild) {
               const remaining = segments.slice(i).join("/");
               if (node.catchAllChild.name) params[node.catchAllChild.name] = remaining;
@@ -342,17 +364,21 @@ export class Prince {
             break;
           }
 
-          // FIX 3: Check !node after the loop
-          if (!matched || !node || !node.handlers) return this.json({ error: "Route not found" }, 404);
+          // FIX: Check !node after the loop (more efficient)
+          if (!matched || !node || !node.handlers) {
+            return this.json({ error: "Route not found" }, 404);
+          }
+
           const handler = node.handlers[req.method];
           if (!handler) return this.json({ error: "Method not allowed" }, 405);
 
+          // Lazy compile and cache
           let methodMap = handlerMap.get(node);
-          if (!methodMap) { 
+          if (!methodMap) {
             methodMap = {};
-            handlerMap.set(node, methodMap); 
+            handlerMap.set(node, methodMap);
           }
-          
+
           if (!methodMap[req.method]) {
             methodMap[req.method] = this.compilePipeline(handler, (_) => params);
           }
@@ -360,7 +386,9 @@ export class Prince {
           return await methodMap[req.method](req, params, query);
         } catch (err) {
           if (this.errorHandler) {
-            try { return this.errorHandler(err, req); } catch {}
+            try {
+              return this.errorHandler(err, req);
+            } catch {}
           }
           return this.json({ error: String(err) }, 500);
         }
