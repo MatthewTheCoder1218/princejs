@@ -84,7 +84,5 @@ bun add princejs
 ## 🇳🇬 Built in Nigeria
 
 **@Lil_Prince_1218 — 13 years old**
-Lagos, Nigeria
-**November 11, 2025**
 
 > *“2.8 kB. 600k req. No excuses.”*
