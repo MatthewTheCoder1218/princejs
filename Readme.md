@@ -1,93 +1,90 @@
-# PrinceJS
+# princejs — The Smallest Bun Framework in History
 
-**The fastest backend framework ever made.**  
-**Beats Hono and Express • Built in 3 days** \
+**2.8 kB gzipped** • **~600k req/30s** • **Built by a 13yo Nigerian**
+
+> *"I didn’t beat Elysia. I outsmarted it."* — @Lil_Prince_1218
 
 ---
 
-### Install
+## 🚀 Get Started
 
 ```bash
-pnpm add princejs
-# or
-bun add princejs
-# or
-npm install princejs
+bun create princejs my-app
+cd my-app
+bun dev
 ```
-
-### Quick Start
 
 ```ts
-import { Prince } from 'princejs';
+import { Prince } from "princejs";
+import { cors } from "princejs/middleware";
 
-const app = new Prince();
+const app = new Prince()
+  .use(cors())
+  .get("/", () => "Hello princejs")
+  .get("/users/:id", (req) => ({ id: req.params.id }));
 
-// CORS + logging
-app.use(async (req, next) => {
-  console.log(`${req.method} ${req.url}`);
-  const res = await next();
-  res.headers.set('Access-Control-Allow-Origin', '*');
-  return res;
-});
-
-// Global error handler
-app.error((err) => app.json({ error: err.message }, 500));
-
-// Routes
-app.get('/', () => app.json({ hello: 'PrinceJS', age: 13 }));
-
-app.post('/pay', async (req) => {
-  let body = {};
-  try { body = await req.json(); } catch {}
-  return app.json({ url: `https://stripe.com/pay/${body.amount || 999}` });
-});
-
-app.listen(3000);
+app.listen(5000);
 ```
 
 ---
 
-## Features
+## ⚔️ Size War (Gzipped — Real World)
 
-All HTTP methods: **GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD**
+| Framework    | Gzipped    | Minified   | vs princejs |
+| ------------ | ---------- | ---------- | ----------- |
+| **princejs** | **2.8 kB** | **7.8 kB** | —           |
+| **Hono**     | 7.3 kB     | 18.7 kB    | 2.6× bigger |
+| **Elysia**   | 62.5 kB    | 245 kB     | 22× bigger  |
+
+> princejs fits in a tweet. Elysia needs a ZIP file.
+
+---
+
+## ⚡ Benchmarks (3×3 — Windows, Nov 11, 2025)
+
+| Framework    | Requests (30s) | Req/s      | Notes          |
+| ------------ | -------------- | ---------- | -------------- |
+| **princejs** | **599k**       | **19,966** | 🥈 2nd fastest |
+| **Elysia**   | 602k           | 20,071     | 🥇 0.5% faster |
+| **Hono**     | 578k           | 19,254     | 🥉 Slower      |
+
+> Elysia is only 0.5% faster. But princejs is **22× smaller**.
+
+---
+
+## 🧹 Features
+
+```ts
+.use(rateLimit({ max: 100 }))
+.use(validate(z.object({ name: z.string() })))
+```
+
+✅ Zod Validation
+✅ CORS + Logger
+✅ Rate Limit Middleware
+
+---
+
+## 📦 Install
 
 ```bash
-app.json(data, status?) — clean JSON with status
-app.error(handler) — global error handling
+npm i princejs
+# or
+bun add princejs
 ```
 
 ---
 
-## 🔥 Benchmark Comparison (real Windows laptop)
+## 📚 Docs
 
-Real-world 30-second load test with `autocannon -c 100 -d 30`.
-
-### **Framework Performance Table**
-
-| Framework            | Avg Req/sec  | Total Requests (30s) | Avg Bytes/sec | Avg Latency  |
-| -------------------- | ------------ | -------------------- | ------------- | ------------ |
-| **PrinceJS** | **8,526.34** | **256,000**          | **1.14 MB/s** | **11.22 ms** |
-| Hono                 | 8,044.8      | 241,000              | 1.08 MB/s     | 11.22 ms     |
-| Elysia               | 9,531.21     | 286,000              | 1.28 MB/s     | 10 ms        |
+**coming soon →** [princejs.vercel.app](https://princejs.vercel.app)
 
 ---
 
-### Author
+## 🇳🇬 Built in Nigeria
 
-Matthew Micheal — Nigeria
+**@Lil_Prince_1218 — 13 years old**
+Lagos, Nigeria
+**November 11, 2025**
 
-Made in PowerShell on a school laptop.
-
-### Links
-
-npm: [https://www.npmjs.com/package/princejs](https://www.npmjs.com/package/princejs)
-
-github: [https://github.com/MatthewTheCoder1218/princejs](https://github.com/MatthewTheCoder1218/princejs)
-
----
-
-PrinceJS — Small. Fast. Unbeatable.
-
-```bash
-pnpm add princejs
-```
+> *“2.8 kB. 600k req. No excuses.”*
