@@ -9,9 +9,11 @@
 ## 🚀 Get Started
 
 ```bash
-bun create princejs my-app
-cd my-app
-bun dev
+bun add princejs
+
+or
+
+npm i princejs
 ```
 
 ```ts
