@@ -65,11 +65,21 @@ class ResponseBuilder {
     return this.build();
   }
 
-  build() {
-    return new Response(this._body, {
-      status: this._status,
-      headers: this._headers
+  stream(cb: (push: (chunk: string) => void, close: () => void) => void) {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        cb(
+          (chunk) => controller.enqueue(encoder.encode(chunk)),
+          () => controller.close()
+        );
+      }
     });
+    return new Response(stream, { status: this._status, headers: this._headers });
+  }
+
+  build() {
+    return new Response(this._body, { status: this._status, headers: this._headers });
   }
 }
 
@@ -78,6 +88,8 @@ export class Prince {
   private middlewares: Middleware[] = [];
   private errorHandler?: (err: any, req: Request) => Response;
   private prefix = "";
+  private wsRoutes: Record<string, any> = {};
+  private openapiData: any = null;
 
   constructor(private devMode = false) {}
 
@@ -102,6 +114,35 @@ export class Prince {
     return new ResponseBuilder();
   }
 
+  // ─────────────────────────────────────────────
+  // WEBSOCKET SUPPORT
+  ws(path: string, options: Partial<WebSocketHandler>) {
+    this.wsRoutes[path] = options;
+    return this;
+  }
+
+  // ─────────────────────────────────────────────
+  // OPENAPI DOCS (STATIC)
+  openapi(path = "/docs") {
+    const paths: Record<string, any> = {};
+    for (const route of this.rawRoutes) {
+      paths[route.path] ??= {};
+      paths[route.path][route.method.toLowerCase()] = {
+        summary: "",
+        responses: { 200: { description: "OK" } }
+      };
+    }
+    this.openapiData = {
+      openapi: "3.1.0",
+      info: { title: "PrinceJS API", version: "1.0.0" },
+      paths
+    };
+    this.get(path, () => this.openapiData);
+    return this;
+  }
+
+  // ─────────────────────────────────────────────
+  // ROUTING
   route(path: string) {
     const group = new Prince(this.devMode);
     group.prefix = path;
@@ -114,49 +155,15 @@ export class Prince {
       post: (subpath: string, handler: RouteHandler) => {
         this.post(path + subpath, handler);
         return group;
-      },
-      put: (subpath: string, handler: RouteHandler) => {
-        this.put(path + subpath, handler);
-        return group;
-      },
-      delete: (subpath: string, handler: RouteHandler) => {
-        this.delete(path + subpath, handler);
-        return group;
-      },
-      patch: (subpath: string, handler: RouteHandler) => {
-        this.patch(path + subpath, handler);
-        return group;
       }
     };
   }
 
-  get(path: string, handler: RouteHandler) {
-    return this.add("GET", path, handler);
-  }
-
-  post(path: string, handler: RouteHandler) {
-    return this.add("POST", path, handler);
-  }
-
-  put(path: string, handler: RouteHandler) {
-    return this.add("PUT", path, handler);
-  }
-
-  delete(path: string, handler: RouteHandler) {
-    return this.add("DELETE", path, handler);
-  }
-
-  patch(path: string, handler: RouteHandler) {
-    return this.add("PATCH", path, handler);
-  }
-
-  options(path: string, handler: RouteHandler) {
-    return this.add("OPTIONS", path, handler);
-  }
-
-  head(path: string, handler: RouteHandler) {
-    return this.add("HEAD", path, handler);
-  }
+  get(path: string, handler: RouteHandler) { return this.add("GET", path, handler); }
+  post(path: string, handler: RouteHandler) { return this.add("POST", path, handler); }
+  put(path: string, handler: RouteHandler) { return this.add("PUT", path, handler); }
+  delete(path: string, handler: RouteHandler) { return this.add("DELETE", path, handler); }
+  patch(path: string, handler: RouteHandler) { return this.add("PATCH", path, handler); }
 
   private add(method: string, path: string, handler: RouteHandler) {
     if (!path.startsWith("/")) path = "/" + path;
@@ -166,41 +173,30 @@ export class Prince {
     return this;
   }
 
-  // Using Bun's native URL parsing (faster and cleaner!)
-  private parseUrl(req: Request): { pathname: string; query: Record<string, string> } {
+  private parseUrl(req: Request) {
     const url = new URL(req.url);
     const query: Record<string, string> = {};
-    
-    // Parse query params using URLSearchParams
-    for (const [key, value] of url.searchParams.entries()) {
-      query[key] = value;
-    }
-    
-    return {
-      pathname: url.pathname,
-      query
-    };
+    for (const [key, value] of url.searchParams.entries()) query[key] = value;
+    return { pathname: url.pathname, query };
   }
 
-  private async parseBody(req: Request): Promise<any> {
+  private async parseBody(req: Request) {
     const ct = req.headers.get("content-type") || "";
-    
-    if (ct.includes("application/json")) {
-      return await req.json();
-    }
-    if (ct.includes("application/x-www-form-urlencoded")) {
-      const text = await req.text();
-      const params: Record<string, string> = {};
-      const pairs = text.split("&");
-      for (const pair of pairs) {
-        const [key, val] = pair.split("=");
-        params[decodeURIComponent(key)] = decodeURIComponent(val || "");
+    if (ct.startsWith("multipart/form-data")) {
+      const form = await req.formData();
+      const files: Record<string, File> = {};
+      const fields: Record<string, string> = {};
+      for (const [k, v] of form.entries()) {
+        if (v instanceof File) files[k] = v;
+        else fields[k] = v as string;
       }
-      return params;
+      return { files, fields };
     }
-    if (ct.includes("text/")) {
-      return await req.text();
+    if (ct.includes("application/json")) return await req.json();
+    if (ct.includes("application/x-www-form-urlencoded")) {
+      return Object.fromEntries(new URLSearchParams(await req.text()).entries());
     }
+    if (ct.startsWith("text/")) return await req.text();
     return null;
   }
 
@@ -209,192 +205,98 @@ export class Prince {
     for (const route of this.rawRoutes) {
       let node = root;
       const parts = route.parts;
-      
-      // Handle root route specially
       if (parts.length === 1 && parts[0] === "") {
         if (!node.handlers) node.handlers = Object.create(null);
         node.handlers[route.method] = route.handler;
         continue;
       }
-      
-      for (let i = 0; i < parts.length; i++) {
-        const part = parts[i];
+      for (const part of parts) {
         if (part === "**") {
-          // FIX: Properly assign name to catchAllChild
-          if (!node.catchAllChild) {
-            node.catchAllChild = { name: "**", node: new TrieNode() };
-          }
+          if (!node.catchAllChild) node.catchAllChild = { name: "**", node: new TrieNode() };
           node = node.catchAllChild.node;
           break;
-        } else if (part === "*") {
-          if (!node.wildcardChild) node.wildcardChild = new TrieNode();
-          node = node.wildcardChild;
         } else if (part.startsWith(":")) {
           const name = part.slice(1);
           if (!node.paramChild) node.paramChild = { name, node: new TrieNode() };
           node = node.paramChild.node;
         } else {
-          if (!node.children[part]) node.children[part] = new TrieNode();
-          node = node.children[part];
+          node = node.children[part] ??= new TrieNode();
         }
       }
-      if (!node.handlers) node.handlers = Object.create(null);
+      node.handlers ??= Object.create(null);
       node.handlers[route.method] = route.handler;
     }
     return root;
   }
 
-  private compilePipeline(handler: RouteHandler, paramsGetter: (req: Request) => Record<string, string>) {
-    const mws = this.middlewares.slice();
-    const hasMiddleware = mws.length > 0;
-    
-    // Fast path: no middleware
-    if (!hasMiddleware) {
+  private compilePipeline(handler: RouteHandler) {
+    const mws = this.middlewares;
+    if (mws.length === 0)
       return async (req: Request, params: Record<string, string>, query: Record<string, string>) => {
-        const princeReq = req as PrinceRequest;
-        princeReq.params = params;
-        princeReq.query = query;
-        
-        // Parse body only for POST/PUT/PATCH
-        if (req.method === "POST" || req.method === "PUT" || req.method === "PATCH") {
-          princeReq.body = await this.parseBody(req);
-        }
-        
-        const res = await handler(princeReq);
+        const r = req as PrinceRequest;
+        r.params = params; r.query = query;
+        if (["POST", "PUT", "PATCH"].includes(req.method)) r.body = await this.parseBody(req);
+        const res = await handler(r);
         if (res instanceof Response) return res;
-        if (typeof res === "string") return new Response(res, { status: 200 });
-        if (res instanceof Uint8Array || res instanceof ArrayBuffer) return new Response(res as any, { status: 200 });
+        if (typeof res === "string") return new Response(res);
         return this.json(res);
       };
-    }
-    
-    // Slow path: with middleware
+
     return async (req: Request, params: Record<string, string>, query: Record<string, string>) => {
-      const princeReq = req as PrinceRequest;
-      princeReq.params = params;
-      princeReq.query = query;
-      
-      let idx = 0;
-      const runNext = async (): Promise<Response | undefined> => {
-        if (idx >= mws.length) {
-          // Parse body only for POST/PUT/PATCH
-          if (req.method === "POST" || req.method === "PUT" || req.method === "PATCH") {
-            princeReq.body = await this.parseBody(req);
-          }
-          
-          const res = await handler(princeReq);
-          if (res instanceof Response) return res;
-          if (typeof res === "string") return new Response(res, { status: 200 });
-          if (res instanceof Uint8Array || res instanceof ArrayBuffer) return new Response(res as any, { status: 200 });
-          return this.json(res);
-        }
-        const mw = mws[idx++];
-        return await mw(req, runNext);
+      const r = req as PrinceRequest;
+      r.params = params; r.query = query;
+      let i = 0;
+      const next = async (): Promise<Response> => {
+        if (i < mws.length) return (await mws[i++](req, next)) ?? new Response(null);
+        if (["POST", "PUT", "PATCH"].includes(req.method)) r.body = await this.parseBody(req);
+        const res = await handler(r);
+        if (res instanceof Response) return res;
+        if (typeof res === "string") return new Response(res);
+        return this.json(res);
       };
-      
-      const out = await runNext();
-      if (out instanceof Response) return out;
-      if (out !== undefined) {
-        if (typeof out === "string") return new Response(out, { status: 200 });
-        if (out instanceof Uint8Array || out instanceof ArrayBuffer) return new Response(out as any, { status: 200 });
-        return this.json(out);
-      }
-      return new Response(null, { status: 204 });
+      return next();
     };
   }
 
-  listen(port = 3000) {
-    const root = this.buildRouter();
-    const handlerMap = new Map<TrieNode, Record<string, any>>();
+  async handleFetch(req: Request) {
+    const { pathname, query } = this.parseUrl(req);
+    const segments = pathname === "/" ? [] : pathname.slice(1).split("/");
+    let node = this.buildRouter(), params: Record<string, string> = {};
+    for (const seg of segments) {
+      if (node.children[seg]) node = node.children[seg];
+      else if (node.paramChild) { params[node.paramChild.name] = seg; node = node.paramChild.node; }
+      else return this.json({ error: "Not Found" }, 404);
+    }
+    const handler = node.handlers?.[req.method];
+    if (!handler) return this.json({ error: "Method Not Allowed" }, 405);
+    const pipeline = this.compilePipeline(handler);
+    return await pipeline(req, params, query);
+  }
 
+  listen(port = 3000) {
+    const self = this;
     Bun.serve({
       port,
-      fetch: async (req: Request) => {
-        try {
-          // Use Bun's native URL parsing
-          const { pathname, query } = this.parseUrl(req);
-          const segments = pathname === "/" ? [] : pathname.slice(1).split("/");
-          let node: TrieNode | undefined = root;
-          const params: Record<string, string> = {};
-          let matched = true;
-
-          // Handle root path specially
-          if (segments.length === 0) {
-            if (!node.handlers) return this.json({ error: "Route not found" }, 404);
-            const handler = node.handlers[req.method];
-            if (!handler) return this.json({ error: "Method not allowed" }, 405);
-
-            let methodMap = handlerMap.get(node);
-            if (!methodMap) {
-              methodMap = {};
-              handlerMap.set(node, methodMap);
-            }
-
-            if (!methodMap[req.method]) {
-              methodMap[req.method] = this.compilePipeline(handler, (_) => params);
-            }
-
-            return await methodMap[req.method](req, params, query);
-          }
-
-          // Route matching
-          for (let i = 0; i < segments.length; i++) {
-            const seg = segments[i];
-            if (node.children[seg]) {
-              node = node.children[seg];
-              continue;
-            }
-            if (node.paramChild) {
-              params[node.paramChild.name] = seg;
-              node = node.paramChild.node;
-              continue;
-            }
-            if (node.wildcardChild) {
-              node = node.wildcardChild;
-              continue;
-            }
-            if (node.catchAllChild) {
-              const remaining = segments.slice(i).join("/");
-              if (node.catchAllChild.name) params[node.catchAllChild.name] = remaining;
-              node = node.catchAllChild.node;
-              break;
-            }
-            // No match found
-            matched = false;
-            break;
-          }
-
-          // FIX: Check !node after the loop (more efficient)
-          if (!matched || !node || !node.handlers) {
-            return this.json({ error: "Route not found" }, 404);
-          }
-
-          const handler = node.handlers[req.method];
-          if (!handler) return this.json({ error: "Method not allowed" }, 405);
-
-          // Lazy compile and cache
-          let methodMap = handlerMap.get(node);
-          if (!methodMap) {
-            methodMap = {};
-            handlerMap.set(node, methodMap);
-          }
-
-          if (!methodMap[req.method]) {
-            methodMap[req.method] = this.compilePipeline(handler, (_) => params);
-          }
-
-          return await methodMap[req.method](req, params, query);
-        } catch (err) {
-          if (this.errorHandler) {
-            try {
-              return this.errorHandler(err, req);
-            } catch {}
-          }
-          return this.json({ error: String(err) }, 500);
+      fetch(req, server) {
+        const { pathname } = new URL(req.url);
+        const wsRoute = self.wsRoutes[pathname];
+        if (wsRoute) {
+          if (server.upgrade(req, { data: { route: wsRoute } })) return;
+          return new Response("Upgrade failed", { status: 500 });
         }
+        try {
+          return self.handleFetch(req);
+        } catch (err) {
+          if (self.errorHandler) return self.errorHandler(err, req);
+          return self.json({ error: String(err) }, 500);
+        }
+      },
+      websocket: {
+        open(ws) { ws.data.route?.open?.(ws); },
+        message(ws, msg) { ws.data.route?.message?.(ws, msg); },
+        close(ws) { ws.data.route?.close?.(ws); }
       }
     });
-
     console.log(`🚀 PrinceJS running at http://localhost:${port}`);
   }
 }
