@@ -9,8 +9,13 @@
 ## 🚀 Get Started
 
 ```bash
-bun add princejs my-app
+# Create a new PrinceJS app
+bun create princejs my-app
+
+# Move into the project
 cd my-app
+
+# Run in development mode
 bun dev
 ```
 
