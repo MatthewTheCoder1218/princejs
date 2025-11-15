@@ -1,11 +1,12 @@
 {
   "name": "princejs",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "description": "An easy and fast backend framework — by a 13yo developer, for developers.",
   "main": "dist/prince.js",
   "types": "dist/prince.d.ts",
+  "type": "module",
   "bin": {
-    "create-princejs": "bin/create.ts"
+    "create-princejs": "./dist/create.js"
   },
   "exports": {
     ".": {
@@ -22,11 +23,13 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
-    "build": "bun build src/index.ts --outdir dist --target bun && bun build src/middleware.ts --outdir dist --target bun && bun build src/validation.ts --outdir dist --target bun",
-    "prepublishOnly": "pnpm build"
+    "build": "bun build src/prince.ts --outdir dist --target bun && bun build src/middleware.ts --outdir dist --target bun && bun build src/validation.ts --outdir dist --target bun && bun build src/create.ts --outdir dist --target bun --format esm",
+    "prepublishOnly": "bun run build"
   },
   "keywords": [
     "backend",
@@ -37,18 +40,34 @@
     "princejs",
     "rest",
     "server",
-    "typescript"
+    "typescript",
+    "websocket",
+    "middleware"
   ],
   "author": "Matthew Michael (MatthewTheCoder1218)",
   "license": "MIT",
-  "repository": "https://github.com/MatthewTheCoder1218/princejs",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MatthewTheCoder1218/princejs"
+  },
+  "bugs": {
+    "url": "https://github.com/MatthewTheCoder1218/princejs/issues"
+  },
+  "homepage": "https://princejs.vercel.app",
   "publishConfig": {
     "access": "public"
   },
   "devDependencies": {
     "@types/bun": "^1.3.2",
     "bun-types": "latest",
-    "typescript": "^5.9.3",
-    "zod": "^4.1.12"
+    "typescript": "^5.9.3"
+  },
+  "peerDependencies": {
+    "zod": "^3.0.0"
+  },
+  "peerDependenciesMeta": {
+    "zod": {
+      "optional": true
+    }
   }
 }

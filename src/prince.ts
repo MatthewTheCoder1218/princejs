@@ -7,6 +7,15 @@ export interface PrinceRequest extends Request {
   query: Record<string, string>;
   body?: any;
   headers: Headers;
+  files?: Record<string, File>;
+}
+
+// Add WebSocket handler type
+export interface WebSocketHandler {
+  open?: (ws: any) => void;
+  message?: (ws: any, msg: string | Buffer) => void;
+  close?: (ws: any, code?: number, reason?: string) => void;
+  drain?: (ws: any) => void;
 }
 
 type RouteHandler = (req: PrinceRequest) => Promise<HandlerResult> | HandlerResult;
@@ -87,8 +96,9 @@ export class Prince {
   private rawRoutes: RouteEntry[] = [];
   private middlewares: Middleware[] = [];
   private errorHandler?: (err: any, req: PrinceRequest) => Response;
-  private wsRoutes: Record<string, any> = {};
+  private wsRoutes: Record<string, WebSocketHandler> = {};
   private openapiData: any = null;
+  private router: TrieNode | null = null; // Cache the router
 
   constructor(private devMode = false) {}
 
@@ -152,6 +162,7 @@ export class Prince {
     if (path !== "/" && path.endsWith("/")) path = path.slice(0, -1);
     const parts = path === "/" ? [""] : path.split("/").slice(1);
     this.rawRoutes.push({ method, path, parts, handler });
+    this.router = null; // Invalidate cache when routes change
     return this;
   }
 
@@ -188,6 +199,9 @@ export class Prince {
   }
 
   private buildRouter() {
+    // Return cached router if available
+    if (this.router) return this.router;
+
     const root = new TrieNode();
     for (const r of this.rawRoutes) {
       let node = root;
@@ -209,13 +223,16 @@ export class Prince {
       node.handlers ??= {};
       node.handlers[r.method] = r.handler;
     }
+    
+    this.router = root; // Cache it
     return root;
   }
 
   private compilePipeline(handler: RouteHandler) {
     return async (req: PrinceRequest, params: any, query: any) => {
-      req.params = params;
-      req.query = query;
+      // Use Object.defineProperty to bypass readonly restrictions
+      Object.defineProperty(req, 'params', { value: params, writable: true, configurable: true });
+      Object.defineProperty(req, 'query', { value: query, writable: true, configurable: true });
 
       let i = 0;
 
@@ -224,13 +241,23 @@ export class Prince {
           return (await this.middlewares[i++](req, next)) ?? new Response("");
         }
 
-        if (["POST", "PUT", "PATCH"].includes(req.method))
-          req.body = await this.parseBody(req);
+        // Parse body for appropriate methods
+        if (["POST", "PUT", "PATCH"].includes(req.method)) {
+          const parsed = await this.parseBody(req);
+          if (parsed && typeof parsed === "object" && "files" in parsed && "fields" in parsed) {
+            Object.defineProperty(req, 'body', { value: parsed.fields, writable: true, configurable: true });
+            Object.defineProperty(req, 'files', { value: parsed.files, writable: true, configurable: true });
+          } else {
+            Object.defineProperty(req, 'body', { value: parsed, writable: true, configurable: true });
+          }
+        }
 
         const res = await handler(req);
 
+        // Handle different response types
         if (res instanceof Response) return res;
         if (typeof res === "string") return new Response(res);
+        if (res instanceof Uint8Array) return new Response(res);
         return this.json(res);
       };
 
@@ -243,15 +270,19 @@ export class Prince {
     const r = req as PrinceRequest;
 
     const segments = pathname === "/" ? [] : pathname.slice(1).split("/");
-    let node = this.buildRouter();
+    const router = this.buildRouter(); // Now uses cached version
+    let node = router;
     let params: Record<string, string> = {};
 
     for (const seg of segments) {
-      if (node.children[seg]) node = node.children[seg];
-      else if (node.paramChild) {
+      if (node.children[seg]) {
+        node = node.children[seg];
+      } else if (node.paramChild) {
         params[node.paramChild.name] = seg;
         node = node.paramChild.node;
-      } else return this.json({ error: "Not Found" }, 404);
+      } else {
+        return this.json({ error: "Not Found" }, 404);
+      }
     }
 
     const handler = node.handlers?.[req.method];
@@ -263,31 +294,37 @@ export class Prince {
 
   listen(port = 3000) {
     const self = this;
+    
     Bun.serve({
       port,
 
       fetch(req, server) {
         const { pathname } = new URL(req.url);
         const ws = self.wsRoutes[pathname];
-        if (ws) {
-          server.upgrade(req, { data: { ws } });
-          return;
+        
+        if (ws && server.upgrade(req, { data: { ws } })) {
+          return; // Successfully upgraded to WebSocket
         }
 
         return self.handleFetch(req as PrinceRequest).catch(err => {
           if (self.errorHandler) return self.errorHandler(err, req as PrinceRequest);
-          return self.json({ error: String(err) }, 500);
+          if (self.devMode) {
+            console.error("Error:", err);
+            return self.json({ error: String(err), stack: err.stack }, 500);
+          }
+          return self.json({ error: "Internal Server Error" }, 500);
         });
       },
 
       websocket: {
         open(ws) { ws.data.ws?.open?.(ws); },
         message(ws, msg) { ws.data.ws?.message?.(ws, msg); },
-        close(ws) { ws.data.ws?.close?.(ws); }
+        close(ws, code, reason) { ws.data.ws?.close?.(ws, code, reason); },
+        drain(ws) { ws.data.ws?.drain?.(ws); }
       }
     });
 
-    console.log(`🚀 PrinceJS running http://localhost:${port}`);
+    console.log(`🚀 PrinceJS running on http://localhost:${port}`);
   }
 }
 

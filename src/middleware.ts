@@ -1,6 +1,6 @@
 type Next = () => Promise<Response | undefined>;
 
-// FIX 1: Add middleware execution tracking
+// Middleware execution tracking
 const MIDDLEWARE_EXECUTED = Symbol("middlewareExecuted");
 
 export const cors = (options?: {
@@ -15,7 +15,7 @@ export const cors = (options?: {
   const credentials = options?.credentials || false;
 
   return async (req: Request, next: Next) => {
-    // FIX 1: Check if middleware already executed
+    // Check if middleware already executed
     if ((req as any)[MIDDLEWARE_EXECUTED]?.cors) {
       return await next();
     }
@@ -26,6 +26,7 @@ export const cors = (options?: {
     }
     (req as any)[MIDDLEWARE_EXECUTED].cors = true;
 
+    // Handle preflight
     if (req.method === "OPTIONS") {
       return new Response(null, {
         status: 204,
@@ -62,15 +63,15 @@ export const logger = (options?: {
 
   const colorize = (code: number, text: string) => {
     if (!colors) return text;
-    if (code >= 500) return `\x1b[31m${text}\x1b[0m`;
-    if (code >= 400) return `\x1b[33m${text}\x1b[0m`;
-    if (code >= 300) return `\x1b[36m${text}\x1b[0m`;
-    if (code >= 200) return `\x1b[32m${text}\x1b[0m`;
+    if (code >= 500) return `\x1b[31m${text}\x1b[0m`; // Red
+    if (code >= 400) return `\x1b[33m${text}\x1b[0m`; // Yellow
+    if (code >= 300) return `\x1b[36m${text}\x1b[0m`; // Cyan
+    if (code >= 200) return `\x1b[32m${text}\x1b[0m`; // Green
     return text;
   };
 
   return async (req: Request, next: Next) => {
-    // FIX 1: Check if middleware already executed
+    // Check if middleware already executed
     if ((req as any)[MIDDLEWARE_EXECUTED]?.logger) {
       return await next();
     }
@@ -108,33 +109,110 @@ export const rateLimit = (options: {
   max: number;
   window: number;
   message?: string;
+  keyGenerator?: (req: Request) => string;
 }) => {
   const store = new Map<string, { count: number; resetAt: number }>();
 
+  // Clean up expired entries periodically
+  setInterval(() => {
+    const now = Date.now();
+    for (const [key, record] of store.entries()) {
+      if (now > record.resetAt) {
+        store.delete(key);
+      }
+    }
+  }, options.window * 1000);
+
   return async (req: Request, next: Next) => {
-    const ip = req.headers.get("x-forwarded-for") || "unknown";
+    // Check if middleware already executed
+    if ((req as any)[MIDDLEWARE_EXECUTED]?.rateLimit) {
+      return await next();
+    }
+    
+    if (!(req as any)[MIDDLEWARE_EXECUTED]) {
+      (req as any)[MIDDLEWARE_EXECUTED] = {};
+    }
+    (req as any)[MIDDLEWARE_EXECUTED].rateLimit = true;
+
+    const key = options.keyGenerator 
+      ? options.keyGenerator(req)
+      : req.headers.get("x-forwarded-for") || 
+        req.headers.get("x-real-ip") || 
+        "unknown";
+    
     const now = Date.now();
     const windowMs = options.window * 1000;
 
-    let record = store.get(ip);
+    let record = store.get(key);
     
     if (!record || now > record.resetAt) {
       record = { count: 1, resetAt: now + windowMs };
-      store.set(ip, record);
+      store.set(key, record);
       return await next();
     }
 
     if (record.count >= options.max) {
+      const retryAfter = Math.ceil((record.resetAt - now) / 1000);
       return new Response(
-        JSON.stringify({ error: options.message || "Too many requests" }),
+        JSON.stringify({ 
+          error: options.message || "Too many requests",
+          retryAfter
+        }),
         { 
           status: 429,
-          headers: { "Content-Type": "application/json" }
+          headers: { 
+            "Content-Type": "application/json",
+            "Retry-After": String(retryAfter)
+          }
         }
       );
     }
 
     record.count++;
+    return await next();
+  };
+};
+
+// Static file serving middleware
+export const serve = (options: {
+  root: string;
+  index?: string;
+  dotfiles?: "allow" | "deny";
+}) => {
+  const root = options.root || "./public";
+  const index = options.index || "index.html";
+  const dotfiles = options.dotfiles || "deny";
+
+  return async (req: Request, next: Next) => {
+    const url = new URL(req.url);
+    let filepath = url.pathname;
+
+    // Security: prevent directory traversal
+    if (filepath.includes("..")) {
+      return new Response("Forbidden", { status: 403 });
+    }
+
+    // Handle dotfiles
+    if (dotfiles === "deny" && filepath.split("/").some(part => part.startsWith("."))) {
+      return new Response("Forbidden", { status: 403 });
+    }
+
+    try {
+      const file = Bun.file(`${root}${filepath}`);
+      
+      if (await file.exists()) {
+        return new Response(file);
+      }
+
+      // Try index file if directory
+      const indexFile = Bun.file(`${root}${filepath}/${index}`);
+      if (await indexFile.exists()) {
+        return new Response(indexFile);
+      }
+    } catch (err) {
+      // File doesn't exist, continue to next middleware
+    }
+
     return await next();
   };
 };
