@@ -28,7 +28,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "bun build src/prince.ts --outdir dist --target bun && bun build src/middleware.ts --outdir dist --target bun && bun build src/validation.ts --outdir dist --target bun && bun build dist/create.ts --outdir dist --target bun --format esm",
+    "build": "bun build src/prince.ts --outdir dist --target bun && bun build src/middleware.ts --outdir dist --target bun && bun build src/validation.ts --outdir dist --target bun && bun build bin/create.ts --outdir dist --target bun --format esm",
     "prepublishOnly": "bun run build"
   },
   "keywords": [
