@@ -234,22 +234,23 @@ export class Prince {
       Object.defineProperty(req, 'params', { value: params, writable: true, configurable: true });
       Object.defineProperty(req, 'query', { value: query, writable: true, configurable: true });
 
+      // Parse body BEFORE middleware (so validation can access it)
+      if (["POST", "PUT", "PATCH"].includes(req.method)) {
+        const parsed = await this.parseBody(req);
+        if (parsed && typeof parsed === "object" && "files" in parsed && "fields" in parsed) {
+          Object.defineProperty(req, 'body', { value: parsed.fields, writable: true, configurable: true });
+          Object.defineProperty(req, 'files', { value: parsed.files, writable: true, configurable: true });
+        } else {
+          Object.defineProperty(req, 'body', { value: parsed, writable: true, configurable: true });
+        }
+      }
+
       let i = 0;
 
       const next = async (): Promise<Response> => {
         if (i < this.middlewares.length) {
-          return (await this.middlewares[i++](req, next)) ?? new Response("");
-        }
-
-        // Parse body for appropriate methods
-        if (["POST", "PUT", "PATCH"].includes(req.method)) {
-          const parsed = await this.parseBody(req);
-          if (parsed && typeof parsed === "object" && "files" in parsed && "fields" in parsed) {
-            Object.defineProperty(req, 'body', { value: parsed.fields, writable: true, configurable: true });
-            Object.defineProperty(req, 'files', { value: parsed.files, writable: true, configurable: true });
-          } else {
-            Object.defineProperty(req, 'body', { value: parsed, writable: true, configurable: true });
-          }
+          const result = await this.middlewares[i++](req, next);
+          return result ?? new Response("");
         }
 
         const res = await handler(req);
