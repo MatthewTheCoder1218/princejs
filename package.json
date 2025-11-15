@@ -1,6 +1,6 @@
 {
   "name": "princejs",
-  "version": "1.5.2",
+  "version": "1.5.3",
   "description": "An easy and fast backend framework — by a 13yo developer, for developers.",
   "main": "dist/prince.js",
   "types": "dist/prince.d.ts",
@@ -63,7 +63,7 @@
     "typescript": "^5.9.3"
   },
   "peerDependencies": {
-    "zod": "^3.0.0"
+    "zod": "^4.0.0"
   },
   "peerDependenciesMeta": {
     "zod": {

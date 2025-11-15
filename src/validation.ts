@@ -12,7 +12,8 @@ export const validate = <T>(schema: ZodSchema<T>, source: "body" | "query" | "pa
       const validated = schema.parse(data);
       req[`validated${source.charAt(0).toUpperCase() + source.slice(1)}`] = validated;
       
-      return await next();
+      const result = await next();
+      return result;
     } catch (err: any) {
       return new Response(
         JSON.stringify({ 
