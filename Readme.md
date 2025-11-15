@@ -152,17 +152,6 @@ app.get("/users/:id", (req) => ({
   name: "John Doe"
 }));
 
-app.post("/users", 
-  validate(z.object({
-    name: z.string().min(3),
-    email: z.string().email()
-  })),
-  (req) => ({
-    success: true,
-    data: req.body
-  })
-);
-
 // File upload
 app.post("/upload", (req) => ({
   files: Object.keys(req.files || {}),
