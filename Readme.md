@@ -124,7 +124,7 @@ app
 
 ---
 
-## 🆕 v3.3.1 — New Tree-Shakable Features
+## New Tree-Shakable Features
 
 ```ts
 import { cache, email, ai, upload } from "princejs/helpers";
