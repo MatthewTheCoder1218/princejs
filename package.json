@@ -1,6 +1,6 @@
 {
   "name": "princejs",
-  "version": "1.5.4",
+  "version": "1.5.5",
   "description": "An easy and fast backend framework — by a 13yo developer, for developers.",
   "main": "dist/prince.js",
   "types": "dist/prince.d.ts",
@@ -17,9 +17,13 @@
       "import": "./dist/middleware.js",
       "types": "./dist/middleware.d.ts"
     },
-    "./validation": {
-      "import": "./dist/validation.js",
-      "types": "./dist/validation.d.ts"
+    "./helpers": {
+      "import": "./dist/helpers.js",
+      "types": "./dist/helpers.d.ts"
+    },
+    "./scheduler": {
+      "import": "./dist/scheduler.js",
+      "types": "./dist/scheduler.d.ts"
     }
   },
   "files": [
@@ -28,7 +32,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "bun build src/prince.ts --outdir dist --target bun && bun build src/middleware.ts --outdir dist --target bun && bun build src/validation.ts --outdir dist --target bun && bun build bin/create.ts --outdir dist --target bun --format esm",
+    "build": "bun build src/prince.ts --outdir dist --target bun && bun build src/middleware.ts --outdir dist --target bun && bun build src/helpers.ts --outdir dist --target bun && bun build bin/create.ts --outdir dist --target bun --format esm && bun build src/scheduler.ts --outdir dist --target bun && bun build src/helpers --outdir dist --target bun",
     "prepublishOnly": "bun run build"
   },
   "keywords": [
@@ -42,7 +46,9 @@
     "server",
     "typescript",
     "websocket",
-    "middleware"
+    "middleware",
+    "scheduler",
+    "fast"
   ],
   "author": "Matthew Michael (MatthewTheCoder1218)",
   "license": "MIT",
@@ -65,14 +71,10 @@
     "zod": "^4.1.12"
   },
   "peerDependencies": {
-    "zod": "^4.1.12",
-    "fast-jwt": "^5.0.0"
+    "zod": "^4.1.12"
   },
   "peerDependenciesMeta": {
     "zod": {
-      "optional": true
-    },
-    "fast-jwt": {
       "optional": true
     }
   }
