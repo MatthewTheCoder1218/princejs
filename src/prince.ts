@@ -1,4 +1,6 @@
-﻿type Next = () => Promise<Response>;
+﻿// @ts-nocheck
+/// <reference types="bun-types" />
+type Next = () => Promise<Response>;
 type Middleware = (req: PrinceRequest, next: Next) => Promise<Response | undefined> | Response | undefined;
 type HandlerResult = Response | Record<string, any> | string | Uint8Array;
 
