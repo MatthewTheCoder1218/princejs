@@ -1,6 +1,6 @@
 {
   "name": "princejs",
-  "version": "1.6.4",
+  "version": "1.6.5",
   "description": "An easy and fast backend framework — by a 13yo developer, for developers.",
   "main": "dist/prince.js",
   "types": "dist/prince.d.ts",
@@ -33,7 +33,7 @@
   ],
   "scripts": {
     "build:js": "bun build src/prince.ts --outdir dist --target bun && bun build src/middleware.ts --outdir dist --target bun && bun build src/helpers.ts --outdir dist --target bun && bun build src/scheduler.ts --outdir dist --target bun && bun build bin/create.ts --outdir dist --target bun --format esm",
-    "build:types": "tsc --emitDeclarationOnly",
+    "build:types": "tsc --emitDeclarationOnly --skipLibCheck",
     "build": "bun run build:js && bun run build:types",
     "prepublishOnly": "bun run build"
   },
