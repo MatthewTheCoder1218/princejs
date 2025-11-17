@@ -133,7 +133,7 @@ import { cron, openapi } from "princejs/scheduler";
 
 * `cache(60)(handler)` — In-memory cache
 * `email(to, subject, html)` — Resend.com
-* `ai(prompt)` — Grok-3 via xAI API
+* `ai(prompt)` — Grok / OpenAI / Hugging Face
 * `upload()` — 1-line file upload
 * `cron("*/2 * * * *", task)` — Cron support
 * `openapi({ title, version })` — Auto docs
