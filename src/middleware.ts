@@ -39,7 +39,7 @@ export const jwt = (secret: string) => {
     const auth = req.headers.get("authorization");
     if (auth?.startsWith("Bearer ")) {
       try {
-        req.user = JSON.parse(atob(auth.slice(7).split(".")[1]));
+        req.user = JSON.parse(atob(auth.slice(7).split(".")[1])) as any;
       } catch {}
     }
     return next();

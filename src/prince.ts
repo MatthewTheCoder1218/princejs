@@ -3,11 +3,21 @@ type Middleware = (req: PrinceRequest, next: Next) => Promise<Response | undefin
 type HandlerResult = Response | Record<string, any> | string | Uint8Array;
 
 export interface PrinceRequest extends Request {
-  params: Record<string, string>;
-  query: Record<string, string>;
-  body?: any;
-  headers: Headers;
-  files?: Record<string, File>;
+  body: BodyInit | null;
+  json(): Promise<any>;
+  text(): Promise<string>;
+  formData(): Promise<FormData>;
+  arrayBuffer(): Promise<ArrayBuffer>;
+
+  // Your custom stuff
+  user?: any;
+  params?: Record<string, string>;
+  query?: URLSearchParams;
+  [key: string]: any;
+}
+
+interface WSData {
+  ws?: WebSocketHandler;
 }
 
 // Add WebSocket handler type
@@ -303,8 +313,8 @@ export class Prince {
         const { pathname } = new URL(req.url);
         const ws = self.wsRoutes[pathname];
         
-        if (ws && server.upgrade(req, { data: { ws } })) {
-          return; // Successfully upgraded to WebSocket
+        if (ws && server.upgrade(req, { data: { ws } as WSData })) {
+          return;
         }
 
         return self.handleFetch(req as PrinceRequest).catch(err => {
@@ -318,10 +328,10 @@ export class Prince {
       },
 
       websocket: {
-        open(ws) { ws.data.ws?.open?.(ws); },
-        message(ws, msg) { ws.data.ws?.message?.(ws, msg); },
-        close(ws, code, reason) { ws.data.ws?.close?.(ws, code, reason); },
-        drain(ws) { ws.data.ws?.drain?.(ws); }
+        open(ws) { (ws.data as WSData)?.ws?.open?.(ws); },
+        message(ws, msg) { (ws.data as WSData)?.ws?.message?.(ws, msg); },
+        close(ws, code, reason) { (ws.data as WSData)?.ws?.close?.(ws, code, reason); },
+        drain(ws) { (ws.data as WSData)?.ws?.drain?.(ws); }
       }
     });
 

@@ -5,23 +5,20 @@
     "lib": ["ESNext"],
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
-    "noEmit": true,
+    "noEmit": false,
+    "emitDeclarationOnly": true,
     "declaration": true,
     "declarationMap": true,
-    "composite": false,
+    "outDir": "./dist",
+    "rootDir": "./src",
     "strict": true,
     "skipLibCheck": true,
     "types": ["bun-types"],
-    "jsx": "react-jsx",
-    "jsxImportSource": "react",
-    "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
-    "isolatedModules": true,
-    "incremental": true,
-    "outDir": "./dist"
+    "isolatedModules": true
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "tests", "examples"]
+  "exclude": ["node_modules", "dist"]
 }
