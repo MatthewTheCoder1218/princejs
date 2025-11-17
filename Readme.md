@@ -127,13 +127,12 @@ app
 ## New Tree-Shakable Features
 
 ```ts
-import { cache, email, ai, upload } from "princejs/helpers";
+import { cache, email, upload } from "princejs/helpers";
 import { cron, openapi } from "princejs/scheduler";
 ```
 
 * `cache(60)(handler)` — In-memory cache
 * `email(to, subject, html)` — Resend.com
-* `ai(prompt)` — Grok / OpenAI / Hugging Face
 * `upload()` — 1-line file upload
 * `cron("*/2 * * * *", task)` — Cron support
 * `openapi({ title, version })` — Auto docs
