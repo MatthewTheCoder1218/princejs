@@ -25,10 +25,38 @@ export const email = async (to: string, subject: string, html: string) => {
 };
 
 // === UPLOAD ===
-export const upload = () => {
+export const upload = (fieldName = "file") => {
   return async (req: PrinceRequest) => {
-    const form = await req.formData();
-    const file = form.get("file") as File;
-    return { name: file.name, size: file.size };
+    try {
+      // The framework should have already parsed multipart form data
+      // and attached files to req.files object
+      
+      if (req.files && req.files[fieldName]) {
+        const file = req.files[fieldName];
+        return {
+          name: file.name,
+          size: file.size,
+          type: file.type,
+          success: true
+        };
+      }
+      
+      // If files aren't in req.files, check if we can access the raw form data
+      if (req.body && req.body.files && req.body.files[fieldName]) {
+        const file = req.body.files[fieldName];
+        return {
+          name: file.name,
+          size: file.size,
+          type: file.type,
+          success: true
+        };
+      }
+      
+      return { error: `No file found with field name: ${fieldName}` };
+      
+    } catch (error) {
+      console.error("Upload processing error:", error);
+      return { error: "File processing failed" };
+    }
   };
 };

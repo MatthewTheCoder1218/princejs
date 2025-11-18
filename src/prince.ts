@@ -175,7 +175,18 @@ export class Prince {
     if (path !== "/" && path.endsWith("/")) path = path.slice(0, -1);
     const parts = path === "/" ? [""] : path.split("/").slice(1);
     this.rawRoutes.push({ method, path, parts, handler });
-    this.router = null; // Invalidate cache when routes change
+    
+    // Auto-add OPTIONS handler for CORS if not already defined
+    if (method !== "OPTIONS" && !this.rawRoutes.some(r => r.path === path && r.method === "OPTIONS")) {
+      this.rawRoutes.push({ 
+        method: "OPTIONS", 
+        path, 
+        parts, 
+        handler: () => new Response(null, { status: 204 }) 
+      });
+    }
+    
+    this.router = null;
     return this;
   }
 
@@ -216,11 +227,25 @@ export class Prince {
   }
 
   private buildRouter() {
-    // Return cached router if available
     if (this.router) return this.router;
 
     const root = new TrieNode();
-    for (const r of this.rawRoutes) {
+    
+    // Sort routes by specificity for better performance
+    const sortedRoutes = [...this.rawRoutes].sort((a, b) => {
+      // Static routes first, then params, then wildcards
+      const aHasWildcard = a.parts.some(p => this.isWildcard(p));
+      const bHasWildcard = b.parts.some(p => this.isWildcard(p));
+      const aHasParam = a.parts.some(p => p.startsWith(':'));
+      const bHasParam = b.parts.some(p => p.startsWith(':'));
+      
+      if (aHasWildcard && !bHasWildcard) return 1;
+      if (!aHasWildcard && bHasWildcard) return -1;
+      if (aHasParam && !bHasParam) return 1;
+      if (!aHasParam && bHasParam) return -1;
+      return 0;
+    });
+    for (const r of sortedRoutes) {
       let node = root;
       if (r.parts.length === 1 && r.parts[0] === "") {
         node.handlers ??= {};
@@ -297,11 +322,31 @@ export class Prince {
   }
 
   async handleFetch(req: Request) {
-    const { pathname, query } = this.parseUrl(req);
+    const url = new URL(req.url);
     const r = req as PrinceRequest;
+    
+    // Handle OPTIONS requests for CORS preflight BEFORE routing
+    if (req.method === "OPTIONS") {
+      return new Response(null, {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, PATCH, OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type, Authorization",
+          "Access-Control-Max-Age": "86400"
+        }
+      });
+    }
 
+    Object.defineProperty(r, 'query', { 
+      value: url.searchParams, 
+      writable: true, 
+      configurable: true 
+    });
+
+    const pathname = url.pathname;
     const segments = pathname === "/" ? [] : pathname.slice(1).split("/");
-    const router = this.buildRouter(); // Now uses cached version
+    const router = this.buildRouter();
     let node = router;
     let params: Record<string, string> = {};
 
@@ -314,11 +359,8 @@ export class Prince {
         params[node.paramChild.name] = seg;
         node = node.paramChild.node;
       } else if (node.wildcardChild) {
-        // Wildcard matches the rest of this level
         node = node.wildcardChild;
-        break;
       } else if (node.catchAllChild) {
-        // Catch-all matches everything remaining
         node = node.catchAllChild.node;
         break;
       } else {
@@ -330,7 +372,7 @@ export class Prince {
     if (!handler) return this.json({ error: "Method Not Allowed" }, 405);
 
     const pipeline = this.compilePipeline(handler);
-    return pipeline(r, params, query);
+    return pipeline(r, params, new URLSearchParams(url.search));
   }
 
   // Add the fetch method for testing
