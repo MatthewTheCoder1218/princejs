@@ -168,6 +168,7 @@ export class Prince {
   put(path: string, handler: RouteHandler) { return this.add("PUT", path, handler); }
   delete(path: string, handler: RouteHandler) { return this.add("DELETE", path, handler); }
   patch(path: string, handler: RouteHandler) { return this.add("PATCH", path, handler); }
+  
 
   private add(method: string, path: string, handler: RouteHandler) {
     if (!path.startsWith("/")) path = "/" + path;
@@ -176,6 +177,10 @@ export class Prince {
     this.rawRoutes.push({ method, path, parts, handler });
     this.router = null; // Invalidate cache when routes change
     return this;
+  }
+
+  private isWildcard(part: string) {
+    return part === "*" || part === "**";
   }
 
   private parseUrl(req: Request) {
@@ -222,8 +227,17 @@ export class Prince {
         node.handlers[r.method] = r.handler;
         continue;
       }
-      for (const part of r.parts) {
-        if (part.startsWith(":")) {
+      for (let i = 0; i < r.parts.length; i++) {
+        const part = r.parts[i];
+        
+        // Handle wildcards
+        if (part === "*") {
+          node.wildcardChild ??= new TrieNode();
+          node = node.wildcardChild;
+        } else if (part === "**") {
+          node.catchAllChild ??= { node: new TrieNode() };
+          node = node.catchAllChild.node;
+        } else if (part.startsWith(":")) {
           const name = part.slice(1);
           node.paramChild ??= { name, node: new TrieNode() };
           node = node.paramChild.node;
@@ -260,11 +274,15 @@ export class Prince {
       let i = 0;
 
       const next = async (): Promise<Response> => {
-        if (i < this.middlewares.length) {
+        // Run through middleware
+        while (i < this.middlewares.length) {
           const result = await this.middlewares[i++](req, next);
-          return result ?? new Response("");
+          // If middleware returns a response, stop and use it
+          if (result instanceof Response) return result;
+          // Otherwise continue to next middleware (don't call next recursively)
         }
 
+        // All middleware done, now call the handler
         const res = await handler(req);
 
         // Handle different response types
@@ -287,12 +305,22 @@ export class Prince {
     let node = router;
     let params: Record<string, string> = {};
 
-    for (const seg of segments) {
+    for (let i = 0; i < segments.length; i++) {
+      const seg = segments[i];
+      
       if (node.children[seg]) {
         node = node.children[seg];
       } else if (node.paramChild) {
         params[node.paramChild.name] = seg;
         node = node.paramChild.node;
+      } else if (node.wildcardChild) {
+        // Wildcard matches the rest of this level
+        node = node.wildcardChild;
+        break;
+      } else if (node.catchAllChild) {
+        // Catch-all matches everything remaining
+        node = node.catchAllChild.node;
+        break;
       } else {
         return this.json({ error: "Not Found" }, 404);
       }
@@ -303,6 +331,20 @@ export class Prince {
 
     const pipeline = this.compilePipeline(handler);
     return pipeline(r, params, query);
+  }
+
+  // Add the fetch method for testing
+  async fetch(req: Request): Promise<Response> {
+    try {
+      return await this.handleFetch(req);
+    } catch (err) {
+      if (this.errorHandler) return this.errorHandler(err, req as PrinceRequest);
+      if (this.devMode) {
+        console.error("Error:", err);
+        return this.json({ error: String(err), stack: err.stack }, 500);
+      }
+      return this.json({ error: "Internal Server Error" }, 500);
+    }
   }
 
   listen(port = 3000) {

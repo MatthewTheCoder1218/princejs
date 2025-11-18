@@ -35,7 +35,9 @@
     "build:js": "bun build src/prince.ts --outdir dist --target bun && bun build src/middleware.ts --outdir dist --target bun && bun build src/helpers.ts --outdir dist --target bun && bun build src/scheduler.ts --outdir dist --target bun && bun build bin/create.ts --outdir dist --target bun --format esm",
     "build:types": "tsc --emitDeclarationOnly --skipLibCheck",
     "build": "bun run build:js && bun run build:types",
-    "prepublishOnly": "bun run build"
+    "prepublishOnly": "bun run build",
+    "test": "bun test",
+    "test:watch": "bun test --watch"
   },
   "keywords": [
     "backend",
@@ -79,5 +81,8 @@
     "zod": {
       "optional": true
     }
+  },
+  "dependencies": {
+    "@standard-schema/spec": "^1.0.0"
   }
 }
