@@ -17,7 +17,9 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
-    "isolatedModules": true
+    "isolatedModules": true,
+    "jsx": "react-jsx",
+    "jsxImportSource": "princejs"
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist"]

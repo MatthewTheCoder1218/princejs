@@ -39,12 +39,13 @@ type RouteEntry = {
   handler: RouteHandler;
 };
 
-class TrieNode {
-  children: Record<string, TrieNode> = Object.create(null);
-  paramChild?: { name: string; node: TrieNode };
-  wildcardChild?: TrieNode;
-  catchAllChild?: { name?: string; node: TrieNode };
-  handlers: Record<string, RouteHandler> | null = null;
+// RADIX TREE NODE (REPLACES TRIE)
+interface RadixNode {
+  handlers: Record<string, RouteHandler> | null;
+  children: Map<string, RadixNode>;
+  paramChild?: { name: string; node: RadixNode };
+  wildcardChild?: RadixNode;
+  catchAllChild?: { name?: string; node: RadixNode };
 }
 
 class ResponseBuilder {
@@ -110,7 +111,8 @@ export class Prince {
   private errorHandler?: (err: any, req: PrinceRequest) => Response;
   private wsRoutes: Record<string, WebSocketHandler> = {};
   private openapiData: any = null;
-  private router: TrieNode | null = null; // Cache the router
+  private router: RadixNode | null = null;
+  private staticRoutes: Map<string, RouteHandler> = new Map();
 
   constructor(private devMode = false) {}
 
@@ -133,6 +135,19 @@ export class Prince {
 
   response() {
     return new ResponseBuilder();
+  }
+
+  jsx(component: any, props?: any) {
+    // Dynamic import to avoid circular dependencies
+    const { render } = require('./jsx');
+    const result = typeof component === 'function' ? component(props) : component;
+    return render(result);
+  }
+
+  html(content: string) {
+    return new Response(content, {
+      headers: { 'Content-Type': 'text/html; charset=utf-8' }
+    });
   }
 
   ws(path: string, options: Partial<WebSocketHandler>) {
@@ -176,29 +191,107 @@ export class Prince {
     const parts = path === "/" ? [""] : path.split("/").slice(1);
     this.rawRoutes.push({ method, path, parts, handler });
     
-    // Auto-add OPTIONS handler for CORS if not already defined
-    if (method !== "OPTIONS" && !this.rawRoutes.some(r => r.path === path && r.method === "OPTIONS")) {
-      this.rawRoutes.push({ 
-        method: "OPTIONS", 
-        path, 
-        parts, 
-        handler: () => new Response(null, { status: 204 }) 
-      });
+    // Cache static routes (no params, wildcards, or regex)
+    const isStaticRoute = !parts.some(part => 
+      part.includes(':') || part.includes('*') || part.includes('(')
+    );
+    
+    if (isStaticRoute) {
+      const staticKey = `${method}:${path}`;
+      this.staticRoutes.set(staticKey, handler);
     }
     
     this.router = null;
     return this;
   }
 
-  private isWildcard(part: string) {
-    return part === "*" || part === "**";
+  private findCommonPrefix(a: string, b: string): string {
+    let i = 0;
+    while (i < a.length && i < b.length && a[i] === b[i]) i++;
+    return a.slice(0, i);
   }
 
-  private parseUrl(req: Request) {
-    const url = new URL(req.url);
-    const query: Record<string, string> = {};
-    for (const [k, v] of url.searchParams.entries()) query[k] = v;
-    return { pathname: url.pathname, query };
+  private buildRouter() {
+    if (this.router) return this.router;
+
+    const root: RadixNode = {
+      handlers: null,
+      children: new Map(),
+    };
+
+    // Filter out static routes
+    const dynamicRoutes = this.rawRoutes.filter(route => {
+      const staticKey = `${route.method}:${route.path}`;
+      return !this.staticRoutes.has(staticKey);
+    });
+
+    for (const route of dynamicRoutes) {
+      let node = root;
+      const parts = route.parts;
+      
+      for (let i = 0; i < parts.length; i++) {
+        const part = parts[i];
+        
+        // Handle special patterns
+        if (part === "*") {
+          node.wildcardChild ??= { handlers: null, children: new Map() };
+          node = node.wildcardChild;
+          continue;
+        } else if (part === "**") {
+          node.catchAllChild ??= { node: { handlers: null, children: new Map() } };
+          node = node.catchAllChild.node;
+          break;
+        } else if (part.startsWith(":")) {
+          const paramName = part.slice(1);
+          node.paramChild ??= { name: paramName, node: { handlers: null, children: new Map() } };
+          node = node.paramChild.node;
+          continue;
+        }
+
+        // Radix tree: find matching child or create new
+        let found = false;
+        for (const [childKey, childNode] of node.children) {
+          const commonPrefix = this.findCommonPrefix(part, childKey);
+          if (commonPrefix.length > 0) {
+            if (commonPrefix.length < childKey.length) {
+              // Split the existing node
+              const remaining = childKey.slice(commonPrefix.length);
+              const newChild: RadixNode = {
+                handlers: childNode.handlers,
+                children: childNode.children,
+                paramChild: childNode.paramChild,
+                wildcardChild: childNode.wildcardChild,
+                catchAllChild: childNode.catchAllChild,
+              };
+              
+              node.children.delete(childKey);
+              node.children.set(commonPrefix, {
+                handlers: null,
+                children: new Map([[remaining, newChild]]),
+              });
+              
+              node = node.children.get(commonPrefix)!;
+            } else {
+              node = childNode;
+            }
+            found = true;
+            break;
+          }
+        }
+
+        if (!found) {
+          node.children.set(part, { handlers: null, children: new Map() });
+          node = node.children.get(part)!;
+        }
+      }
+
+      // Set handler for this route
+      node.handlers ??= {};
+      node.handlers[route.method] = route.handler;
+    }
+
+    this.router = root;
+    return root;
   }
 
   private async parseBody(req: Request) {
@@ -226,66 +319,11 @@ export class Prince {
     return null;
   }
 
-  private buildRouter() {
-    if (this.router) return this.router;
-
-    const root = new TrieNode();
-    
-    // Sort routes by specificity for better performance
-    const sortedRoutes = [...this.rawRoutes].sort((a, b) => {
-      // Static routes first, then params, then wildcards
-      const aHasWildcard = a.parts.some(p => this.isWildcard(p));
-      const bHasWildcard = b.parts.some(p => this.isWildcard(p));
-      const aHasParam = a.parts.some(p => p.startsWith(':'));
-      const bHasParam = b.parts.some(p => p.startsWith(':'));
-      
-      if (aHasWildcard && !bHasWildcard) return 1;
-      if (!aHasWildcard && bHasWildcard) return -1;
-      if (aHasParam && !bHasParam) return 1;
-      if (!aHasParam && bHasParam) return -1;
-      return 0;
-    });
-    for (const r of sortedRoutes) {
-      let node = root;
-      if (r.parts.length === 1 && r.parts[0] === "") {
-        node.handlers ??= {};
-        node.handlers[r.method] = r.handler;
-        continue;
-      }
-      for (let i = 0; i < r.parts.length; i++) {
-        const part = r.parts[i];
-        
-        // Handle wildcards
-        if (part === "*") {
-          node.wildcardChild ??= new TrieNode();
-          node = node.wildcardChild;
-        } else if (part === "**") {
-          node.catchAllChild ??= { node: new TrieNode() };
-          node = node.catchAllChild.node;
-        } else if (part.startsWith(":")) {
-          const name = part.slice(1);
-          node.paramChild ??= { name, node: new TrieNode() };
-          node = node.paramChild.node;
-        } else {
-          node.children[part] ??= new TrieNode();
-          node = node.children[part];
-        }
-      }
-      node.handlers ??= {};
-      node.handlers[r.method] = r.handler;
-    }
-    
-    this.router = root; // Cache it
-    return root;
-  }
-
   private compilePipeline(handler: RouteHandler) {
     return async (req: PrinceRequest, params: any, query: any) => {
-      // Use Object.defineProperty to bypass readonly restrictions
       Object.defineProperty(req, 'params', { value: params, writable: true, configurable: true });
       Object.defineProperty(req, 'query', { value: query, writable: true, configurable: true });
 
-      // Parse body BEFORE middleware (so validation can access it)
       if (["POST", "PUT", "PATCH"].includes(req.method)) {
         const parsed = await this.parseBody(req);
         if (parsed && typeof parsed === "object" && "files" in parsed && "fields" in parsed) {
@@ -299,18 +337,13 @@ export class Prince {
       let i = 0;
 
       const next = async (): Promise<Response> => {
-        // Run through middleware
         while (i < this.middlewares.length) {
           const result = await this.middlewares[i++](req, next);
-          // If middleware returns a response, stop and use it
           if (result instanceof Response) return result;
-          // Otherwise continue to next middleware (don't call next recursively)
         }
 
-        // All middleware done, now call the handler
         const res = await handler(req);
 
-        // Handle different response types
         if (res instanceof Response) return res;
         if (typeof res === "string") return new Response(res);
         if (res instanceof Uint8Array) return new Response(res);
@@ -321,30 +354,44 @@ export class Prince {
     };
   }
 
+  private async executeHandler(
+    req: PrinceRequest, 
+    handler: RouteHandler, 
+    params: Record<string, string>, 
+    query: URLSearchParams
+  ) {
+    Object.defineProperty(req, 'params', { value: params, writable: true, configurable: true });
+    Object.defineProperty(req, 'query', { value: query, writable: true, configurable: true });
+
+    if (["POST", "PUT", "PATCH"].includes(req.method)) {
+      const parsed = await this.parseBody(req);
+      if (parsed) {
+        if (typeof parsed === "object" && "files" in parsed && "fields" in parsed) {
+          Object.defineProperty(req, 'body', { value: parsed.fields, writable: true, configurable: true });
+          Object.defineProperty(req, 'files', { value: parsed.files, writable: true, configurable: true });
+        } else {
+          Object.defineProperty(req, 'body', { value: parsed, writable: true, configurable: true });
+        }
+      }
+    }
+
+    return this.compilePipeline(handler)(req, params, query);
+  }
+
   async handleFetch(req: Request) {
     const url = new URL(req.url);
     const r = req as PrinceRequest;
-    
-    // Handle OPTIONS requests for CORS preflight BEFORE routing
-    if (req.method === "OPTIONS") {
-      return new Response(null, {
-        status: 204,
-        headers: {
-          "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, PATCH, OPTIONS",
-          "Access-Control-Allow-Headers": "Content-Type, Authorization",
-          "Access-Control-Max-Age": "86400"
-        }
-      });
+    const method = req.method;
+    const pathname = url.pathname;
+
+    // Static route fast path
+    const staticKey = `${method}:${pathname}`;
+    const staticHandler = this.staticRoutes.get(staticKey);
+    if (staticHandler) {
+      return this.executeHandler(r, staticHandler, {}, url.searchParams);
     }
 
-    Object.defineProperty(r, 'query', { 
-      value: url.searchParams, 
-      writable: true, 
-      configurable: true 
-    });
-
-    const pathname = url.pathname;
+    // Radix tree lookup for dynamic routes
     const segments = pathname === "/" ? [] : pathname.slice(1).split("/");
     const router = this.buildRouter();
     let node = router;
@@ -352,30 +399,44 @@ export class Prince {
 
     for (let i = 0; i < segments.length; i++) {
       const seg = segments[i];
-      
-      if (node.children[seg]) {
-        node = node.children[seg];
-      } else if (node.paramChild) {
-        params[node.paramChild.name] = seg;
-        node = node.paramChild.node;
-      } else if (node.wildcardChild) {
-        node = node.wildcardChild;
-      } else if (node.catchAllChild) {
-        node = node.catchAllChild.node;
-        break;
+      let found = false;
+
+      // Try exact match first
+      if (node.children.has(seg)) {
+        node = node.children.get(seg)!;
+        found = true;
       } else {
-        return this.json({ error: "Not Found" }, 404);
+        // Try prefix matching (Radix tree advantage)
+        for (const [childKey, childNode] of node.children) {
+          if (seg.startsWith(childKey)) {
+            node = childNode;
+            found = true;
+            break;
+          }
+        }
+      }
+
+      if (!found) {
+        if (node.paramChild) {
+          params[node.paramChild.name] = seg;
+          node = node.paramChild.node;
+        } else if (node.wildcardChild) {
+          node = node.wildcardChild;
+        } else if (node.catchAllChild) {
+          node = node.catchAllChild.node;
+          break;
+        } else {
+          return this.json({ error: "Not Found" }, 404);
+        }
       }
     }
 
-    const handler = node.handlers?.[req.method];
+    const handler = node.handlers?.[method];
     if (!handler) return this.json({ error: "Method Not Allowed" }, 405);
 
-    const pipeline = this.compilePipeline(handler);
-    return pipeline(r, params, new URLSearchParams(url.search));
+    return this.executeHandler(r, handler, params, url.searchParams);
   }
 
-  // Add the fetch method for testing
   async fetch(req: Request): Promise<Response> {
     try {
       return await this.handleFetch(req);
