@@ -1,6 +1,9 @@
 // princejs/middleware.ts
 import type { PrinceRequest } from "./prince";
 import { z } from "zod";
+import { jwtVerify } from "jose";
+
+const encoder = new TextEncoder();
 
 type Next = () => Promise<Response | undefined>;
 
@@ -34,15 +37,31 @@ export const logger = () => {
 };
 
 // === JWT ===
-export const jwt = (secret: string) => {
-  return async (req: PrinceRequest, next: Next) => {
+export const jwt = (secretOrKey: string | Uint8Array) => {
+  const key = typeof secretOrKey === "string" 
+    ? encoder.encode(secretOrKey) 
+    : secretOrKey;
+
+  return async (req: any, next: () => Promise<Response | undefined>) => {
     const auth = req.headers.get("authorization");
-    if (auth?.startsWith("Bearer ")) {
-      try {
-        req.user = JSON.parse(atob(auth.slice(7).split(".")[1])) as any;
-      } catch {}
+
+    if (!auth?.startsWith("Bearer ")) {
+      return next();
     }
-    return next();
+
+    const token = auth.slice(7);
+
+    try {
+      const { payload } = await jwtVerify(token, key, {
+        algorithms: ["HS256", "HS512"],
+      });
+
+      req.user = payload;
+      return next();
+    } catch (err) {
+      // Invalid token → just continue without user
+      return next();
+    }
   };
 };
 

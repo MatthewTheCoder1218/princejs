@@ -71,6 +71,7 @@
     "@types/bun": "^1.3.2",
     "bun-types": "latest",
     "fast-jwt": "^5.0.0",
+    "jose": "^6.1.2",
     "typescript": "^5.9.3",
     "zod": "^4.1.12"
   },
