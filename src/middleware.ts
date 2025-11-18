@@ -1,6 +1,6 @@
 // princejs/middleware.ts
 import type { PrinceRequest } from "./prince";
-import type { StandardSchemaV1 } from "@standard-schema/spec";
+import { z } from "zod";
 
 type Next = () => Promise<Response | undefined>;
 
@@ -58,61 +58,14 @@ export const rateLimit = (max: number, window = 60) => {
   };
 };
 
-export type StandardSchema<T = unknown> = StandardSchemaV1<T>;
-
-export const validate = <T>(schema: StandardSchema<T>) => {
-  return async (req: any, next: () => Promise<Response | undefined>) => {
-    if (!req.headers.get("content-type")?.includes("application/json")) {
-      return next();
-    }
-
+// === VALIDATE ===
+export const validate = <T>(schema: z.ZodSchema<T>) => {
+  return async (req: PrinceRequest, next: Next) => {
     try {
-      // ---- Safe JSON Body Reader ----
-      let body: any;
-
-      if (req.bodyUsed) {
-        body = req.body;
-      } else {
-        try {
-          const text = await req.text();
-          body = text ? JSON.parse(text) : undefined;
-        } catch {
-          body = undefined;
-        }
-      }
-
-      // ---- ⭐ Standard Schema V1 Validation ----
-      const parseFn =
-        typeof (schema as any).parseAsync === "function"
-          ? (schema as any).parseAsync
-          : (schema as any).parse;
-
-      const result = await parseFn(body);
-
-      // result is { value, issues } in V1
-      if (result.issues || result.error) {
-        return new Response(
-          JSON.stringify({
-            error: "Validation failed",
-            issues: result.issues ?? result.error,
-          }),
-          {
-            status: 400,
-            headers: { "content-type": "application/json" },
-          }
-        );
-      }
-
-      req.validated = result.data ?? result.value;
-      return next();
-    } catch (err) {
-      return new Response(
-        JSON.stringify({ error: "Invalid JSON or validation failed" }),
-        {
-          status: 400,
-          headers: { "content-type": "application/json" },
-        }
-      );
+      req.body = schema.parse(req.body);
+    } catch (e: any) {
+      return new Response(JSON.stringify({ error: "Invalid", details: e.errors }), { status: 400 });
     }
+    return next();
   };
 };
