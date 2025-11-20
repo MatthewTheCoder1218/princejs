@@ -1,4 +1,4 @@
-# 🌐 **PrinceJS**
+# 👑 **PrinceJS**
 
 ### ⚡ Ultra-clean, modern & minimal Bun web framework. Among the top three in performance.
 
@@ -83,6 +83,19 @@ import { cron, openapi } from "princejs/scheduler";
 * `upload()` — One‑line file upload
 * `cron("*/2 * * * *", task)` — Cron jobs
 * `openapi({ title, version })` — Auto docs
+
+---
+
+## Performance With Oha (oha -c 100 -z 30s)
+
+| Framework | Req/s          | Total  |
+|-----------|----------------|--------|
+| Elysia    | 25,312 req/s   | 759k   |
+| Hono      | 22,124 req/s   | 664k   |
+| PrinceJS  | 21,748 req/s   | 653k   |
+| Express   | 9,325 req/s    | 280k   |
+
+### Among the top three
 
 ---
 
