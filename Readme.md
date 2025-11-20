@@ -129,11 +129,6 @@ app.post("/upload", upload(), (req) => ({ files: Object.keys(req.files || {}) })
 
 cron("*/1 * * * *", () => console.log("PrinceJS heartbeat"));
 
-app.ws("/chat", {
-  open: (ws) => ws.send("Welcome!"),
-  message: (ws, msg) => ws.send(`Echo: ${msg}`)
-});
-
 app.listen(3000);
 ```
 
