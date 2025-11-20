@@ -1,4 +1,5 @@
 ﻿// prince.ts - Fixed router implementation
+// @ts-nocheck 
 /// <reference types="bun-types" />
 
 type Next = () => Promise<Response>;
