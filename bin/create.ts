@@ -6,7 +6,7 @@ const name = Bun.argv[2];
 
 if (!name) {
   console.error("❌ Error: Please provide a project name");
-  console.log("Usage: bunx create-princejs <project-name>");
+  console.log("Usage: bun create-princejs <project-name>");
   process.exit(1);
 }
 
