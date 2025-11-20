@@ -348,7 +348,7 @@ describe("Middleware - Validation", () => {
     });
 
     app.use(validate(schema));
-    app.post("/user", (req) => ({ created: req.body }));
+    app.post("/user", (req) => ({ created: req.parsedBody }));
 
     const res = await app.fetch(
       new Request("http://localhost/user", {
@@ -371,7 +371,7 @@ describe("Middleware - Validation", () => {
     });
 
     app.use(validate(schema));
-    app.post("/user", (req) => ({ created: req.body }));
+    app.post("/user", (req) => ({ created: req.parsedBody }));
 
     const res = await app.fetch(
       new Request("http://localhost/user", {
@@ -383,8 +383,7 @@ describe("Middleware - Validation", () => {
 
     expect(res.status).toBe(400);
     const data = await res.json();
-    // The middleware returns "Invalid"
-    expect(data.error).toBe("Invalid");
+    expect(data.error).toBe("Validation failed"); // Updated error message
   });
 
   test("Missing required fields rejected", async () => {
@@ -395,13 +394,13 @@ describe("Middleware - Validation", () => {
     });
 
     app.use(validate(schema));
-    app.post("/user", (req) => ({ created: req.body }));
+    app.post("/user", (req) => ({ created: req.parsedBody }));
 
     const res = await app.fetch(
       new Request("http://localhost/user", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: "Alice" })
+        body: JSON.stringify({ name: "Alice" }) // Missing email
       })
     );
 
@@ -412,8 +411,7 @@ describe("Middleware - Validation", () => {
 describe("Middleware - CORS", () => {
   test("OPTIONS request returns CORS headers", async () => {
     const app = prince();
-    // CORS should be one of the first middlewares
-    app.use(cors("*"));
+    app.use(cors("*")); // CORS must be registered as middleware
     app.get("/api", () => ({ ok: true }));
 
     const res = await app.fetch(
@@ -423,6 +421,16 @@ describe("Middleware - CORS", () => {
     expect(res.status).toBe(204);
     expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
     expect(res.headers.get("Access-Control-Allow-Methods")).toContain("GET");
+  });
+
+  test("Regular request gets CORS headers", async () => {
+    const app = prince();
+    app.use(cors("https://example.com"));
+    app.get("/api", () => ({ ok: true }));
+
+    const res = await app.fetch(new Request("http://localhost/api"));
+
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("https://example.com");
   });
 });
 
