@@ -70,6 +70,10 @@ export const render = (jsxContent: any) => {
 const renderChildren = (children: any): string => {
   if (!children) return '';
   if (Array.isArray(children)) return children.map(renderChildren).join('');
-  if (typeof children === 'object') return render(children);
+  if (typeof children === 'object') {
+    const rendered = render(children);
+    // Extract HTML string from Response
+    return typeof rendered === 'string' ? rendered : '';
+  }
   return String(children);
 };

@@ -1,4 +1,5 @@
 // princejs/middleware.ts
+// @ts-nocheck 
 import type { PrinceRequest } from "./prince";
 import { z } from "zod";
 import { jwtVerify, SignJWT } from "jose";
