@@ -1,29 +1,20 @@
-﻿// @ts-nocheck
+﻿// prince.ts - Fixed router implementation
 /// <reference types="bun-types" />
+
 type Next = () => Promise<Response>;
 type Middleware = (req: PrinceRequest, next: Next) => Promise<Response | undefined> | Response | undefined;
 type HandlerResult = Response | Record<string, any> | string | Uint8Array;
 
 export interface PrinceRequest extends Request {
-  body: BodyInit | null;
-  json(): Promise<any>;
-  text(): Promise<string>;
-  formData(): Promise<FormData>;
-  arrayBuffer(): Promise<ArrayBuffer>;
-
-  // Your custom stuff
+  parsedBody?: any;
+  files?: Record<string, File>;
   user?: any;
   params?: Record<string, string>;
   query?: URLSearchParams;
   [key: string]: any;
 }
 
-interface WSData {
-  ws?: WebSocketHandler;
-}
-
-// Add WebSocket handler type
-export interface WebSocketHandler {
+interface WebSocketHandler {
   open?: (ws: any) => void;
   message?: (ws: any, msg: string | Buffer) => void;
   close?: (ws: any, code?: number, reason?: string) => void;
@@ -39,13 +30,14 @@ type RouteEntry = {
   handler: RouteHandler;
 };
 
-// RADIX TREE NODE (REPLACES TRIE)
+// SIMPLIFIED RADIX NODE - Like Hono's
 interface RadixNode {
-  handlers: Record<string, RouteHandler> | null;
-  children: Map<string, RadixNode>;
-  paramChild?: { name: string; node: RadixNode };
-  wildcardChild?: RadixNode;
-  catchAllChild?: { name?: string; node: RadixNode };
+  pattern: string;
+  handlers: Record<string, RouteHandler>;
+  children: RadixNode[];
+  paramName?: string;
+  isWildcard?: boolean;
+  isCatchAll?: boolean;
 }
 
 class ResponseBuilder {
@@ -87,19 +79,6 @@ class ResponseBuilder {
     return this.build();
   }
 
-  stream(cb: (push: (chunk: string) => void, close: () => void) => void) {
-    const encoder = new TextEncoder();
-    const stream = new ReadableStream({
-      start(controller) {
-        cb(
-          (chunk) => controller.enqueue(encoder.encode(chunk)),
-          () => controller.close()
-        );
-      }
-    });
-    return new Response(stream, { status: this._status, headers: this._headers });
-  }
-
   build() {
     return new Response(this._body, { status: this._status, headers: this._headers });
   }
@@ -113,6 +92,11 @@ export class Prince {
   private openapiData: any = null;
   private router: RadixNode | null = null;
   private staticRoutes: Map<string, RouteHandler> = new Map();
+  private routeCache = new Map<string, { 
+    handler: RouteHandler; 
+    params: Record<string, string>;
+    allowedMethods?: string[];
+  }>();
 
   constructor(private devMode = false) {}
 
@@ -137,53 +121,13 @@ export class Prince {
     return new ResponseBuilder();
   }
 
-  jsx(component: any, props?: any) {
-    // Dynamic import to avoid circular dependencies
-    const { render } = require('./jsx');
-    const result = typeof component === 'function' ? component(props) : component;
-    return render(result);
-  }
-
-  html(content: string) {
-    return new Response(content, {
-      headers: { 'Content-Type': 'text/html; charset=utf-8' }
-    });
-  }
-
-  ws(path: string, options: Partial<WebSocketHandler>) {
-    this.wsRoutes[path] = options;
-    return this;
-  }
-
-  openapi(path = "/docs") {
-    const paths: Record<string, any> = {};
-
-    for (const route of this.rawRoutes) {
-      paths[route.path] ??= {};
-      paths[route.path][route.method.toLowerCase()] = {
-        summary: "",
-        responses: { 200: { description: "OK" } }
-      };
-    }
-
-    this.openapiData = {
-      openapi: "3.1.0",
-      info: { title: "PrinceJS API", version: "1.0.0" },
-      paths
-    };
-
-    this.get(path, () => this.openapiData);
-    return this;
-  }
-
-  // ---------------------------
   // ROUTING API
   get(path: string, handler: RouteHandler) { return this.add("GET", path, handler); }
   post(path: string, handler: RouteHandler) { return this.add("POST", path, handler); }
   put(path: string, handler: RouteHandler) { return this.add("PUT", path, handler); }
   delete(path: string, handler: RouteHandler) { return this.add("DELETE", path, handler); }
   patch(path: string, handler: RouteHandler) { return this.add("PATCH", path, handler); }
-  
+  options(path: string, handler: RouteHandler) { return this.add("OPTIONS", path, handler); }
 
   private add(method: string, path: string, handler: RouteHandler) {
     if (!path.startsWith("/")) path = "/" + path;
@@ -191,7 +135,7 @@ export class Prince {
     const parts = path === "/" ? [""] : path.split("/").slice(1);
     this.rawRoutes.push({ method, path, parts, handler });
     
-    // Cache static routes (no params, wildcards, or regex)
+    // Cache static routes
     const isStaticRoute = !parts.some(part => 
       part.includes(':') || part.includes('*') || part.includes('(')
     );
@@ -201,157 +145,248 @@ export class Prince {
       this.staticRoutes.set(staticKey, handler);
     }
     
+    this.routeCache.clear();
     this.router = null;
     return this;
   }
 
-  private findCommonPrefix(a: string, b: string): string {
-    let i = 0;
-    while (i < a.length && i < b.length && a[i] === b[i]) i++;
-    return a.slice(0, i);
-  }
-
-  private buildRouter() {
+  // SIMPLIFIED RADIX TREE BUILDER - Like Hono
+  private buildRouter(): RadixNode {
     if (this.router) return this.router;
 
     const root: RadixNode = {
-      handlers: null,
-      children: new Map(),
+      pattern: '',
+      handlers: {},
+      children: []
     };
 
-    // Filter out static routes
-    const dynamicRoutes = this.rawRoutes.filter(route => {
-      const staticKey = `${route.method}:${route.path}`;
-      return !this.staticRoutes.has(staticKey);
-    });
-
-    for (const route of dynamicRoutes) {
-      let node = root;
-      const parts = route.parts;
-      
-      for (let i = 0; i < parts.length; i++) {
-        const part = parts[i];
-        
-        // Handle special patterns
-        if (part === "*") {
-          node.wildcardChild ??= { handlers: null, children: new Map() };
-          node = node.wildcardChild;
-          continue;
-        } else if (part === "**") {
-          node.catchAllChild ??= { node: { handlers: null, children: new Map() } };
-          node = node.catchAllChild.node;
-          break;
-        } else if (part.startsWith(":")) {
-          const paramName = part.slice(1);
-          node.paramChild ??= { name: paramName, node: { handlers: null, children: new Map() } };
-          node = node.paramChild.node;
-          continue;
-        }
-
-        // Radix tree: find matching child or create new
-        let found = false;
-        for (const [childKey, childNode] of node.children) {
-          const commonPrefix = this.findCommonPrefix(part, childKey);
-          if (commonPrefix.length > 0) {
-            if (commonPrefix.length < childKey.length) {
-              // Split the existing node
-              const remaining = childKey.slice(commonPrefix.length);
-              const newChild: RadixNode = {
-                handlers: childNode.handlers,
-                children: childNode.children,
-                paramChild: childNode.paramChild,
-                wildcardChild: childNode.wildcardChild,
-                catchAllChild: childNode.catchAllChild,
-              };
-              
-              node.children.delete(childKey);
-              node.children.set(commonPrefix, {
-                handlers: null,
-                children: new Map([[remaining, newChild]]),
-              });
-              
-              node = node.children.get(commonPrefix)!;
-            } else {
-              node = childNode;
-            }
-            found = true;
-            break;
-          }
-        }
-
-        if (!found) {
-          node.children.set(part, { handlers: null, children: new Map() });
-          node = node.children.get(part)!;
-        }
+    for (const route of this.rawRoutes) {
+      if (this.staticRoutes.has(`${route.method}:${route.path}`)) {
+        continue; // Skip static routes
       }
 
-      // Set handler for this route
-      node.handlers ??= {};
-      node.handlers[route.method] = route.handler;
+      this.insertRoute(root, route);
     }
 
     this.router = root;
     return root;
   }
 
-  private async parseBody(req: Request) {
-    const ct = req.headers.get("content-type") || "";
+  private insertRoute(node: RadixNode, route: RouteEntry) {
+    let currentNode = node;
+    
+    for (let i = 0; i < route.parts.length; i++) {
+      const part = route.parts[i];
+      let found = false;
 
-    if (ct.includes("application/json"))
-      return await req.json();
-
-    if (ct.includes("application/x-www-form-urlencoded"))
-      return Object.fromEntries(new URLSearchParams(await req.text()).entries());
-
-    if (ct.startsWith("multipart/form-data")) {
-      const fd = await req.formData();
-      const files: Record<string, File> = {};
-      const fields: Record<string, string> = {};
-      for (const [k, v] of fd.entries()) {
-        if (v instanceof File) files[k] = v;
-        else fields[k] = v as string;
+      // Check existing children
+      for (const child of currentNode.children) {
+        if (child.pattern === part) {
+          currentNode = child;
+          found = true;
+          break;
+        }
       }
-      return { files, fields };
+
+      if (!found) {
+        // Create new node
+        const newNode: RadixNode = {
+          pattern: part,
+          handlers: {},
+          children: []
+        };
+
+        // Determine node type
+        if (part.startsWith(':')) {
+          newNode.paramName = part.slice(1);
+        } else if (part === '*') {
+          newNode.isWildcard = true;
+        } else if (part === '**') {
+          newNode.isCatchAll = true;
+        }
+
+        currentNode.children.push(newNode);
+        currentNode = newNode;
+      }
     }
 
-    if (ct.startsWith("text/")) return await req.text();
+    // Add handler to the final node
+    currentNode.handlers[route.method] = route.handler;
+  }
+
+  // FIXED ROUTE MATCHING - Like Hono's
+  private findRoute(method: string, pathname: string): { 
+    handler: RouteHandler; 
+    params: Record<string, string>;
+    allowedMethods?: string[];
+  } | null {
+    const cacheKey = `${method}:${pathname}`;
+    
+    if (this.routeCache.has(cacheKey)) {
+      return this.routeCache.get(cacheKey)!;
+    }
+
+    // Static route fast path
+    const staticKey = `${method}:${pathname}`;
+    const staticHandler = this.staticRoutes.get(staticKey);
+    if (staticHandler) {
+      const result = { handler: staticHandler, params: {} };
+      this.routeCache.set(cacheKey, result);
+      return result;
+    }
+
+    // Check if path exists for 405 errors
+    const allowedMethods = new Set<string>();
+    let pathExists = false;
+    
+    for (const route of this.rawRoutes) {
+      if (this.matchPath(route.path, pathname)) {
+        pathExists = true;
+        allowedMethods.add(route.method);
+      }
+    }
+
+    if (!pathExists) {
+      this.routeCache.set(cacheKey, null!);
+      return null;
+    }
+
+    // Radix tree lookup
+    const segments = pathname === "/" ? [""] : pathname.split("/").slice(1);
+    const result = this.matchRoute(this.buildRouter(), segments, method);
+    
+    if (result) {
+      this.routeCache.set(cacheKey, result);
+      return result;
+    }
+
+    // Method not allowed
+    if (pathExists) {
+      const methodNotAllowed = { 
+        handler: null as any, 
+        params: {}, 
+        allowedMethods: Array.from(allowedMethods) 
+      };
+      this.routeCache.set(cacheKey, methodNotAllowed);
+      return methodNotAllowed;
+    }
+
+    this.routeCache.set(cacheKey, null!);
+    return null;
+  }
+
+  private matchPath(routePath: string, requestPath: string): boolean {
+    const routeParts = routePath === "/" ? [""] : routePath.split("/").slice(1);
+    const requestParts = requestPath === "/" ? [""] : requestPath.split("/").slice(1);
+    
+    if (routeParts.length !== requestParts.length) {
+      // Check for catch-all
+      if (routeParts.includes('**')) {
+        return true;
+      }
+      return false;
+    }
+
+    for (let i = 0; i < routeParts.length; i++) {
+      const routePart = routeParts[i];
+      const requestPart = requestParts[i];
+
+      if (routePart.startsWith(':') || routePart === '*' || routePart === '**') {
+        continue; // Params and wildcards match anything
+      }
+      
+      if (routePart !== requestPart) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  private matchRoute(node: RadixNode, segments: string[], method: string, params: Record<string, string> = {}, index = 0): { handler: RouteHandler; params: Record<string, string> } | null {
+    if (index === segments.length) {
+      const handler = node.handlers[method];
+      return handler ? { handler, params } : null;
+    }
+
+    const segment = segments[index];
+
+    // Check static children first
+    for (const child of node.children) {
+      if (!child.paramName && !child.isWildcard && !child.isCatchAll) {
+        if (child.pattern === segment) {
+          const result = this.matchRoute(child, segments, method, params, index + 1);
+          if (result) return result;
+        }
+      }
+    }
+
+    // Check parameter nodes
+    for (const child of node.children) {
+      if (child.paramName) {
+        params[child.paramName] = segment;
+        const result = this.matchRoute(child, segments, method, params, index + 1);
+        if (result) return result;
+        delete params[child.paramName];
+      }
+    }
+
+    // Check wildcard nodes
+    for (const child of node.children) {
+      if (child.isWildcard) {
+        const result = this.matchRoute(child, segments, method, params, index + 1);
+        if (result) return result;
+      }
+    }
+
+    // Check catch-all nodes
+    for (const child of node.children) {
+      if (child.isCatchAll) {
+        const handler = child.handlers[method];
+        if (handler) {
+          return { handler, params };
+        }
+      }
+    }
 
     return null;
   }
 
-  private compilePipeline(handler: RouteHandler) {
-    return async (req: PrinceRequest, params: any, query: any) => {
-      Object.defineProperty(req, 'params', { value: params, writable: true, configurable: true });
-      Object.defineProperty(req, 'query', { value: query, writable: true, configurable: true });
-
-      if (["POST", "PUT", "PATCH"].includes(req.method)) {
-        const parsed = await this.parseBody(req);
-        if (parsed && typeof parsed === "object" && "files" in parsed && "fields" in parsed) {
-          Object.defineProperty(req, 'body', { value: parsed.fields, writable: true, configurable: true });
-          Object.defineProperty(req, 'files', { value: parsed.files, writable: true, configurable: true });
-        } else {
-          Object.defineProperty(req, 'body', { value: parsed, writable: true, configurable: true });
-        }
+  // BODY PARSING (same as before)
+  private async parseBody(req: Request): Promise<any> {
+    const ct = req.headers.get("content-type") || "";
+    const clonedReq = req.clone();
+    
+    try {
+      if (ct.includes("application/json")) {
+        return await clonedReq.json();
       }
 
-      let i = 0;
+      if (ct.includes("application/x-www-form-urlencoded")) {
+        const text = await clonedReq.text();
+        return Object.fromEntries(new URLSearchParams(text));
+      }
 
-      const next = async (): Promise<Response> => {
-        while (i < this.middlewares.length) {
-          const result = await this.middlewares[i++](req, next);
-          if (result instanceof Response) return result;
+      if (ct.startsWith("multipart/form-data")) {
+        const fd = await clonedReq.formData();
+        const files: Record<string, File> = {};
+        const fields: Record<string, string> = {};
+        for (const [k, v] of fd.entries()) {
+          if (v instanceof File) files[k] = v;
+          else fields[k] = v as string;
         }
+        return { files, fields };
+      }
 
-        const res = await handler(req);
+      if (ct.startsWith("text/")) {
+        return await clonedReq.text();
+      }
+    } catch (error) {
+      console.error("Body parsing error:", error);
+      return null;
+    }
 
-        if (res instanceof Response) return res;
-        if (typeof res === "string") return new Response(res);
-        if (res instanceof Uint8Array) return new Response(res);
-        return this.json(res);
-      };
-
-      return next();
-    };
+    return null;
   }
 
   private async executeHandler(
@@ -359,7 +394,7 @@ export class Prince {
     handler: RouteHandler, 
     params: Record<string, string>, 
     query: URLSearchParams
-  ) {
+  ): Promise<Response> {
     Object.defineProperty(req, 'params', { value: params, writable: true, configurable: true });
     Object.defineProperty(req, 'query', { value: query, writable: true, configurable: true });
 
@@ -367,74 +402,63 @@ export class Prince {
       const parsed = await this.parseBody(req);
       if (parsed) {
         if (typeof parsed === "object" && "files" in parsed && "fields" in parsed) {
-          Object.defineProperty(req, 'body', { value: parsed.fields, writable: true, configurable: true });
+          Object.defineProperty(req, 'parsedBody', { value: parsed.fields, writable: true, configurable: true });
           Object.defineProperty(req, 'files', { value: parsed.files, writable: true, configurable: true });
         } else {
-          Object.defineProperty(req, 'body', { value: parsed, writable: true, configurable: true });
+          Object.defineProperty(req, 'parsedBody', { value: parsed, writable: true, configurable: true });
         }
       }
     }
 
-    return this.compilePipeline(handler)(req, params, query);
+    Object.defineProperty(req, 'body', { 
+      get: () => req.parsedBody,
+      set: (value) => { req.parsedBody = value; },
+      configurable: true 
+    });
+
+    let i = 0;
+    const next = async (): Promise<Response> => {
+      while (i < this.middlewares.length) {
+        const result = await this.middlewares[i++](req, next);
+        if (result instanceof Response) return result;
+      }
+
+      const res = await handler(req);
+      if (res instanceof Response) return res;
+      if (typeof res === "string") return new Response(res);
+      if (res instanceof Uint8Array) return new Response(res);
+      return this.json(res);
+    };
+
+    return next();
   }
 
-  async handleFetch(req: Request) {
+  async handleFetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const r = req as PrinceRequest;
     const method = req.method;
     const pathname = url.pathname;
 
-    // Static route fast path
-    const staticKey = `${method}:${pathname}`;
-    const staticHandler = this.staticRoutes.get(staticKey);
-    if (staticHandler) {
-      return this.executeHandler(r, staticHandler, {}, url.searchParams);
+    const routeMatch = this.findRoute(method, pathname);
+    
+    if (!routeMatch) {
+      return this.json({ error: "Not Found" }, 404);
     }
 
-    // Radix tree lookup for dynamic routes
-    const segments = pathname === "/" ? [] : pathname.slice(1).split("/");
-    const router = this.buildRouter();
-    let node = router;
-    let params: Record<string, string> = {};
-
-    for (let i = 0; i < segments.length; i++) {
-      const seg = segments[i];
-      let found = false;
-
-      // Try exact match first
-      if (node.children.has(seg)) {
-        node = node.children.get(seg)!;
-        found = true;
-      } else {
-        // Try prefix matching (Radix tree advantage)
-        for (const [childKey, childNode] of node.children) {
-          if (seg.startsWith(childKey)) {
-            node = childNode;
-            found = true;
-            break;
-          }
+    if (routeMatch.allowedMethods && !routeMatch.handler) {
+      return new Response(
+        JSON.stringify({ error: "Method Not Allowed" }),
+        { 
+          status: 405, 
+          headers: { 
+            'Allow': routeMatch.allowedMethods.join(', '),
+            'Content-Type': 'application/json'
+          } 
         }
-      }
-
-      if (!found) {
-        if (node.paramChild) {
-          params[node.paramChild.name] = seg;
-          node = node.paramChild.node;
-        } else if (node.wildcardChild) {
-          node = node.wildcardChild;
-        } else if (node.catchAllChild) {
-          node = node.catchAllChild.node;
-          break;
-        } else {
-          return this.json({ error: "Not Found" }, 404);
-        }
-      }
+      );
     }
 
-    const handler = node.handlers?.[method];
-    if (!handler) return this.json({ error: "Method Not Allowed" }, 405);
-
-    return this.executeHandler(r, handler, params, url.searchParams);
+    return this.executeHandler(r, routeMatch.handler, routeMatch.params, url.searchParams);
   }
 
   async fetch(req: Request): Promise<Response> {
@@ -455,31 +479,7 @@ export class Prince {
     
     Bun.serve({
       port,
-
-      fetch(req, server) {
-        const { pathname } = new URL(req.url);
-        const ws = self.wsRoutes[pathname];
-        
-        if (ws && server.upgrade(req, { data: { ws } as WSData })) {
-          return;
-        }
-
-        return self.handleFetch(req as PrinceRequest).catch(err => {
-          if (self.errorHandler) return self.errorHandler(err, req as PrinceRequest);
-          if (self.devMode) {
-            console.error("Error:", err);
-            return self.json({ error: String(err), stack: err.stack }, 500);
-          }
-          return self.json({ error: "Internal Server Error" }, 500);
-        });
-      },
-
-      websocket: {
-        open(ws) { (ws.data as WSData)?.ws?.open?.(ws); },
-        message(ws, msg) { (ws.data as WSData)?.ws?.message?.(ws, msg); },
-        close(ws, code, reason) { (ws.data as WSData)?.ws?.close?.(ws, code, reason); },
-        drain(ws) { (ws.data as WSData)?.ws?.drain?.(ws); }
-      }
+      fetch: (req, server) => self.fetch(req)
     });
 
     console.log(`🚀 PrinceJS running on http://localhost:${port}`);

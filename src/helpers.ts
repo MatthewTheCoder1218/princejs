@@ -25,38 +25,49 @@ export const email = async (to: string, subject: string, html: string) => {
 };
 
 // === UPLOAD ===
-export const upload = (fieldName = "file") => {
+export const upload = () => {
   return async (req: PrinceRequest) => {
     try {
-      // The framework should have already parsed multipart form data
-      // and attached files to req.files object
+      // Check if it's a multipart request
+      const contentType = req.headers.get('content-type') || '';
+      if (!contentType.includes('multipart/form-data')) {
+        return new Response(
+          JSON.stringify({ error: 'Expected multipart/form-data' }),
+          { status: 400, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      const formData = await req.formData();
+      const file = formData.get('file');
       
-      if (req.files && req.files[fieldName]) {
-        const file = req.files[fieldName];
-        return {
-          name: file.name,
-          size: file.size,
-          type: file.type,
-          success: true
-        };
+      if (!file || !(file instanceof File)) {
+        return new Response(
+          JSON.stringify({ error: 'No file provided or invalid file' }),
+          { status: 400, headers: { 'Content-Type': 'application/json' } }
+        );
       }
       
-      // If files aren't in req.files, check if we can access the raw form data
-      if (req.body && req.body.files && req.body.files[fieldName]) {
-        const file = req.body.files[fieldName];
-        return {
-          name: file.name,
-          size: file.size,
-          type: file.type,
-          success: true
-        };
-      }
+      // Return file info
+      const fileInfo = {
+        name: file.name,
+        size: file.size,
+        type: file.type,
+        lastModified: file.lastModified,
+      };
       
-      return { error: `No file found with field name: ${fieldName}` };
-      
+      return new Response(JSON.stringify(fileInfo), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
     } catch (error) {
-      console.error("Upload processing error:", error);
-      return { error: "File processing failed" };
+      console.error('Upload error:', error);
+      return new Response(
+        JSON.stringify({ error: 'Upload failed' }),
+        { 
+          status: 500,
+          headers: { 'Content-Type': 'application/json' }
+        }
+      );
     }
   };
 };

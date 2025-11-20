@@ -7,38 +7,38 @@ type Next = () => Promise<Response | undefined>;
 type HandlerReturn = Response | { [key: string]: any } | undefined;
 
 // === CORS ===
-export const cors = (origin = "*") => {
-  return async (req: PrinceRequest, next: Next) => {
-    // Handle preflight OPTIONS request - return immediately without calling next()
-    if (req.method === "OPTIONS") {
+// In middleware.ts - Fix CORS middleware
+export const cors = (origin: string = '*') => {
+  return async (req: any, next: Function) => {
+    if (req.method === 'OPTIONS') {
       return new Response(null, {
         status: 204,
         headers: {
-          "Access-Control-Allow-Origin": origin,
-          "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, PATCH, OPTIONS",
-          "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Requested-With",
-          "Access-Control-Max-Age": "86400"
+          'Access-Control-Allow-Origin': origin,
+          'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, PATCH, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+          'Access-Control-Max-Age': '86400',
         }
       });
     }
-
-    // Process the actual request
-    const res = await next();
     
-    // Add CORS headers to the response
-    if (res) {
-      const newHeaders = new Headers(res.headers);
-      newHeaders.set("Access-Control-Allow-Origin", origin);
-      newHeaders.set("Access-Control-Allow-Credentials", "true");
+    const response = await next();
+    
+    // Add CORS headers to actual response
+    if (response) {
+      const headers = new Headers(response.headers);
+      headers.set('Access-Control-Allow-Origin', origin);
+      headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+      headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
       
-      return new Response(res.body, {
-        status: res.status,
-        statusText: res.statusText,
-        headers: newHeaders
+      return new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers
       });
     }
     
-    return res;
+    return response;
   };
 };
 
@@ -53,16 +53,14 @@ export const logger = () => {
 };
 
 // === JWT ===
-export const signJWT = async (
-  payload: object, 
-  key: Uint8Array, 
-  exp: string = '2h'
-): Promise<string> => {
-  return new SignJWT({ ...payload })
+export const signJWT = async (payload: any, secret: Uint8Array, expiresIn: string) => {
+  const jwt = await new SignJWT(payload)
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()
-    .setExpirationTime(exp)
-    .sign(key);
+    .setExpirationTime(expiresIn)
+    .sign(secret);
+  
+  return jwt;
 };
 
 
@@ -138,13 +136,39 @@ export const rateLimit = (max: number, window = 60) => {
 };
 
 // === VALIDATE ===
-export const validate = <T>(schema: z.ZodSchema<T>) => {
-  return async (req: PrinceRequest, next: Next) => {
+// In middleware.ts - Fix validate middleware
+export const validate = (schema: z.ZodSchema) => {
+  return async (req: any, next: Function) => {
     try {
-      req.body = schema.parse(req.body);
-    } catch (e: any) {
-      return new Response(JSON.stringify({ error: "Invalid", details: e.errors }), { status: 400 });
+      // Use parsedBody instead of body since we fixed body parsing
+      if (req.parsedBody) {
+        const parsed = schema.parse(req.parsedBody);
+        req.parsedBody = parsed; // Replace with validated data
+        // Also update body for backward compatibility
+        Object.defineProperty(req, 'body', { 
+          value: parsed,
+          writable: true,
+          configurable: true 
+        });
+      }
+      return next();
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return new Response(
+          JSON.stringify({ 
+            error: 'Validation failed', 
+            details: error.errors.map(e => ({
+              path: e.path.join('.'),
+              message: e.message
+            }))
+          }),
+          { 
+            status: 400,
+            headers: { 'Content-Type': 'application/json' }
+          }
+        );
+      }
+      throw error;
     }
-    return next();
   };
 };

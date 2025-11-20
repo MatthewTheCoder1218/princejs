@@ -25,22 +25,39 @@ export const jsxDEV = jsx;
 export const Fragment = (props: JSXProps) => props.children;
 
 // Helper components for common patterns
-export const Html = (props: JSXProps) => jsx('html', props);
-export const Head = (props: JSXProps) => jsx('head', props);
-export const Body = (props: JSXProps) => jsx('body', props);
-export const Title = (props: JSXProps) => jsx('title', props);
-export const Div = (props: JSXProps) => jsx('div', props);
-export const Span = (props: JSXProps) => jsx('span', props);
-export const P = (props: JSXProps) => jsx('p', props);
-export const A = (props: JSXProps) => jsx('a', props);
-export const Button = (props: JSXProps) => jsx('button', props);
-export const Input = (props: JSXProps) => jsx('input', { ...props, children: undefined });
-export const Form = (props: JSXProps) => jsx('form', props);
-export const H1 = (props: JSXProps) => jsx('h1', props);
-export const H2 = (props: JSXProps) => jsx('h2', props);
-export const H3 = (props: JSXProps) => jsx('h3', props);
-export const Ul = (props: JSXProps) => jsx('ul', props);
-export const Li = (props: JSXProps) => jsx('li', props);
+// In your JSX implementation
+export const Html = (props: any) => {
+  return `<html>${renderChildren(props.children)}</html>`;
+};
+
+export const Head = (props: any) => {
+  return `<head>${renderChildren(props.children)}</head>`;
+};
+
+export const Body = (props: any) => {
+  return `<body>${renderChildren(props.children)}</body>`;
+};
+
+export const H1 = (props: any) => {
+  return `<h1>${renderChildren(props.children)}</h1>`;
+};
+
+export const P = (props: any) => {
+  return `<p>${renderChildren(props.children)}</p>`;
+};
+
+export const Div = (props: any) => {
+  const attrs = Object.keys(props)
+    .filter(key => key !== 'children')
+    .map(key => {
+      if (key === 'className') return `class="${props[key]}"`;
+      return `${key}="${props[key]}"`;
+    })
+    .join(' ');
+  
+  return `<div ${attrs}>${renderChildren(props.children)}</div>`;
+};
+
 
 // Response helper for JSX
 export const render = (jsxContent: any) => {
@@ -48,4 +65,11 @@ export const render = (jsxContent: any) => {
   return new Response(html, {
     headers: { 'Content-Type': 'text/html; charset=utf-8' }
   });
+};
+
+const renderChildren = (children: any): string => {
+  if (!children) return '';
+  if (Array.isArray(children)) return children.map(renderChildren).join('');
+  if (typeof children === 'object') return render(children);
+  return String(children);
 };
