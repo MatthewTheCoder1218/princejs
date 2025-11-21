@@ -105,8 +105,9 @@ import { cron, openapi } from "princejs/scheduler";
 import { prince } from "princejs";
 import { cors, logger, rateLimit } from "princejs/middleware";
 import { validate } from "princejs/validation";
-import { cache, ai, upload } from "princejs/helpers";
+import { cache, upload } from "princejs/helpers";
 import { cron } from "princejs/scheduler";
+import { Html, Head, Body, H1, P, render } from "princejs/jsx"
 import { z } from "zod";
 
 const app = prince(true);
@@ -117,13 +118,35 @@ app.use(rateLimit({ max: 100, window: 60 }));
 
 app.use(validate(z.object({ name: z.string() })));
 
+const Page = () => (
+  Html({
+    children: [
+      Head({
+        children: [
+          "Test Page"
+        ]
+      }),
+      Body({
+        children: [
+          H1({
+            children: "Hello World"
+          }),
+          P({
+            children: "This is a test"
+          })
+        ]
+      })
+    ]
+  })
+);
+
 app.get("/", () => ({ message: "Welcome to PrinceJS" }));
 
 app.get("/users/:id", (req) => ({ id: req.params.id }));
 
-app.get("/data", cache(60)(() => ({ time: Date.now() })));
+app.get("/jsx", () => render(Page()));
 
-app.post("/ai", async (req) => ({ reply: await ai(req.body.q) }));
+app.get("/data", cache(60)(() => ({ time: Date.now() })));
 
 app.post("/upload", upload(), (req) => ({ files: Object.keys(req.files || {}) }));
 
