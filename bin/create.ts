@@ -27,7 +27,7 @@ const packageJson = {
   version: "1.0.0",
   type: "module",
   scripts: {
-    dev: "bun --watch src/index.ts",
+    dev: "bun --hot src/index.ts",
     start: "bun src/index.ts"
   },
   dependencies: {
