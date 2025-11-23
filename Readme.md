@@ -1,6 +1,6 @@
 # 👑 **PrinceJS**
 
-### ⚡ Ultra-clean, modern & minimal Bun web framework. Among the top three in performance.
+### ⚡ Ultra-clean, modern & minimal Bun web framework built by a 13 year old. Among the top three in performance.
 
 ![npm](https://img.shields.io/npm/v/princejs)
 ![stars](https://img.shields.io/github/stars/MatthewTheCoder1218/princejs)
