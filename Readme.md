@@ -61,8 +61,6 @@ app
 
 ### ✓ Validation (Zod)
 
-### ✓ WebSocket Support
-
 ### ✓ File Uploads
 
 ### ✓ Response Builder
