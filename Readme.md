@@ -65,22 +65,17 @@ app
 
 ### ✓ Response Builder
 
-### ✓ OpenAPI
+### WebSocket Support
 
----
+### Auth & API Keys
 
-## New Tree‑Shakable Features
+### Server-Sent Events
 
-```ts
-import { cache, email, upload } from "princejs/helpers";
-import { cron, openapi } from "princejs/scheduler";
-```
+### Sessions
 
-* `cache(60)(handler)` — In‑memory cache
-* `email(to, subject, html)` — Email helper
-* `upload()` — One‑line file upload
-* `cron("*/2 * * * *", task)` — Cron jobs
-* `openapi({ title, version })` — Auto docs
+### Response Compression
+
+### Database (SQLite)
 
 ---
 
@@ -101,11 +96,12 @@ import { cron, openapi } from "princejs/scheduler";
 
 ```ts
 import { prince } from "princejs";
-import { cors, logger, rateLimit } from "princejs/middleware";
+import { cors, logger, rateLimit, auth, apiKey, jwt, session, compress } from "princejs/middleware";
 import { validate } from "princejs/validation";
-import { cache, upload } from "princejs/helpers";
+import { cache, upload, sse } from "princejs/helpers";
 import { cron } from "princejs/scheduler";
 import { Html, Head, Body, H1, P, render } from "princejs/jsx"
+import { db } from "princejs/db";
 import { z } from "zod";
 
 const app = prince(true);
@@ -115,6 +111,10 @@ app.use(logger());
 app.use(rateLimit({ max: 100, window: 60 }));
 
 app.use(validate(z.object({ name: z.string() })));
+
+app.use(jwt(key));
+app.use(session({ secret: "key" }));
+app.use(compress());
 
 const Page = () => (
   Html({
@@ -138,6 +138,17 @@ const Page = () => (
   })
 );
 
+const users = db.sqlite("./db.sqlite", "CREATE TABLE users...");
+
+app.ws("/chat", {
+  open: (ws) => ws.send("Welcome!"),
+  message: (ws, msg) => ws.send(`Echo: ${msg}`)
+});
+
+
+app.get("/protected", auth(), (req) => ({ user: req.user }));
+app.get("/api", apiKey({ keys: ["key_123"] }), handler);
+
 app.get("/", () => ({ message: "Welcome to PrinceJS" }));
 
 app.get("/users/:id", (req) => ({ id: req.params.id }));
@@ -147,6 +158,14 @@ app.get("/jsx", () => render(Page()));
 app.get("/data", cache(60)(() => ({ time: Date.now() })));
 
 app.post("/upload", upload(), (req) => ({ files: Object.keys(req.files || {}) }));
+
+app.get("/events", sse(), (req) => {
+  setInterval(() => req.sseSend({ time: Date.now() }), 1000);
+});
+
+app.get("/count", (req) => ({ visits: req.session.visits++ || 1 }));
+
+app.get("/users", () => users.query("SELECT * FROM users"));
 
 cron("*/1 * * * *", () => console.log("PrinceJS heartbeat"));
 
