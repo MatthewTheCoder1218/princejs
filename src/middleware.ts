@@ -173,3 +173,166 @@ export const validate = (schema: z.ZodSchema) => {
     }
   };
 };
+
+// === AUTH GUARD ===
+export const auth = (options?: { roles?: string[] }) => {
+  return async (req: PrinceRequest, next: Next) => {
+    if (!req.user) {
+      return new Response(
+        JSON.stringify({ error: "Unauthorized" }),
+        { status: 401, headers: { "Content-Type": "application/json" } }
+      );
+    }
+    
+    // Role check (only if roles specified)
+    if (options?.roles) {
+      const userRole = req.user.role || req.user.roles;
+      const hasRole = Array.isArray(userRole) 
+        ? options.roles.some(r => userRole.includes(r))
+        : options.roles.includes(userRole);
+        
+      if (!hasRole) {
+        return new Response(
+          JSON.stringify({ error: "Forbidden" }),
+          { status: 403, headers: { "Content-Type": "application/json" } }
+        );
+      }
+    }
+    
+    return next();
+  };
+};
+
+// === API KEY ===
+export const apiKey = (options: { keys: string[]; header?: string }) => {
+  const keySet = new Set(options.keys); // O(1) lookup
+  const headerName = (options.header || "x-api-key").toLowerCase();
+  
+  return async (req: PrinceRequest, next: Next) => {
+    const key = req.headers.get(headerName);
+    
+    if (!key || !keySet.has(key)) {
+      return new Response(
+        JSON.stringify({ error: "Invalid API key" }),
+        { status: 401, headers: { "Content-Type": "application/json" } }
+      );
+    }
+    
+    req.apiKey = key;
+    return next();
+  };
+};
+
+// === COMPRESSION ===
+export const compress = (options?: { 
+  threshold?: number; 
+  filter?: (req: PrinceRequest) => boolean;
+}) => {
+  const threshold = options?.threshold || 1024;
+  const filter = options?.filter || (() => true);
+  
+  return async (req: PrinceRequest, next: Next) => {
+    const response = await next();
+    if (!response || !filter(req)) return response;
+    
+    const contentType = response.headers.get("content-type") || "";
+    
+    // Only compress text-based responses
+    if (!contentType.includes("json") && 
+        !contentType.includes("text") && 
+        !contentType.includes("javascript") &&
+        !contentType.includes("xml")) {
+      return response;
+    }
+    
+    const acceptEncoding = req.headers.get("accept-encoding") || "";
+    
+    // Check if client supports compression
+    if (!acceptEncoding.includes("gzip") && !acceptEncoding.includes("br")) {
+      return response;
+    }
+    
+    const body = await response.text();
+    
+    // Don't compress small responses
+    if (body.length < threshold) {
+      return new Response(body, response);
+    }
+    
+    // Use Bun's native compression (FAST!)
+    const compressed = Bun.gzipSync(new TextEncoder().encode(body));
+    
+    const headers = new Headers(response.headers);
+    headers.set("Content-Encoding", "gzip");
+    headers.set("Content-Length", String(compressed.length));
+    
+    return new Response(compressed, {
+      status: response.status,
+      statusText: response.statusText,
+      headers
+    });
+  };
+};
+
+// === SESSION ===
+export const session = (options: { 
+  secret: string; 
+  maxAge?: number; 
+  name?: string;
+}) => {
+  const sessions = new Map<string, any>();
+  const cookieName = options.name || "prince.sid";
+  const maxAge = options.maxAge || 3600;
+  
+  // Cleanup old sessions every 5 minutes
+  setInterval(() => {
+    const now = Date.now();
+    for (const [id, data] of sessions.entries()) {
+      if (data._expires && data._expires < now) {
+        sessions.delete(id);
+      }
+    }
+  }, 300_000);
+  
+  return async (req: PrinceRequest, next: Next) => {
+    // Parse session ID from cookie (optimized)
+    const cookies = req.headers.get("cookie");
+    let sessionId: string | undefined;
+    
+    if (cookies) {
+      const match = cookies.match(new RegExp(`${cookieName}=([^;]+)`));
+      sessionId = match?.[1];
+    }
+    
+    // Load or create session
+    if (sessionId && sessions.has(sessionId)) {
+      req.session = sessions.get(sessionId);
+    } else {
+      sessionId = crypto.randomUUID();
+      req.session = { _expires: Date.now() + maxAge * 1000 };
+    }
+    
+    req.session.destroy = () => {
+      if (sessionId) sessions.delete(sessionId);
+    };
+    
+    const response = await next();
+    if (!response) return response;
+    
+    // Save session
+    req.session._expires = Date.now() + maxAge * 1000;
+    sessions.set(sessionId, req.session);
+    
+    // Set cookie
+    const headers = new Headers(response.headers);
+    headers.append("Set-Cookie", 
+      `${cookieName}=${sessionId}; Max-Age=${maxAge}; HttpOnly; SameSite=Lax; Path=/`
+    );
+    
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers
+    });
+  };
+};
