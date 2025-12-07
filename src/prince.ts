@@ -129,6 +129,10 @@ export class Prince {
   delete(path: string, handler: RouteHandler) { return this.add("DELETE", path, handler); }
   patch(path: string, handler: RouteHandler) { return this.add("PATCH", path, handler); }
   options(path: string, handler: RouteHandler) { return this.add("OPTIONS", path, handler); }
+  ws(path: string, handlers: WebSocketHandler) {
+    this.wsRoutes[path] = handlers;
+    return this;
+  }
 
   private add(method: string, path: string, handler: RouteHandler) {
     if (!path.startsWith("/")) path = "/" + path;
@@ -151,7 +155,7 @@ export class Prince {
     return this;
   }
 
-  // SIMPLIFIED RADIX TREE BUILDER - Like Hono
+  // SIMPLIFIED RADIX TREE BUILDER
   private buildRouter(): RadixNode {
     if (this.router) return this.router;
 
@@ -215,7 +219,7 @@ export class Prince {
     currentNode.handlers[route.method] = route.handler;
   }
 
-  // FIXED ROUTE MATCHING - Like Hono's
+  // FIXED ROUTE MATCHING
   private findRoute(method: string, pathname: string): { 
     handler: RouteHandler; 
     params: Record<string, string>;
@@ -480,7 +484,44 @@ export class Prince {
     
     Bun.serve({
       port,
-      fetch: (req, server) => self.fetch(req)
+      fetch: (req, server) => {
+        const url = new URL(req.url);
+        
+        // WebSocket upgrade check (zero overhead for non-WS requests)
+        if (self.wsRoutes[url.pathname] && server.upgrade(req, {
+          data: { path: url.pathname }
+        })) {
+          return; // Upgraded to WebSocket
+        }
+        
+        return self.fetch(req);
+      },
+      websocket: {
+        open(ws) {
+          const path = ws.data?.path;
+          if (path && self.wsRoutes[path]?.open) {
+            self.wsRoutes[path].open!(ws);
+          }
+        },
+        message(ws, message) {
+          const path = ws.data?.path;
+          if (path && self.wsRoutes[path]?.message) {
+            self.wsRoutes[path].message!(ws, message);
+          }
+        },
+        close(ws, code, reason) {
+          const path = ws.data?.path;
+          if (path && self.wsRoutes[path]?.close) {
+            self.wsRoutes[path].close!(ws, code, reason);
+          }
+        },
+        drain(ws) {
+          const path = ws.data?.path;
+          if (path && self.wsRoutes[path]?.drain) {
+            self.wsRoutes[path].drain!(ws);
+          }
+        }
+      }
     });
 
     console.log(`🚀 PrinceJS running on http://localhost:${port}`);
