@@ -1,11 +1,13 @@
 // test/prince.test.ts
 import { describe, test, expect, beforeEach, afterEach, jest } from "bun:test";
 import { prince } from "../src/prince";
-import { jwt, signJWT, rateLimit, validate, cors, logger } from "../src/middleware";
-import { cache, email, upload } from "../src/helpers"; // Assumed import for helpers
-import { openapi } from "../src/scheduler"; // Assumed import for openapi
+import { jwt, signJWT, rateLimit, validate, cors, logger, auth, apiKey, compress, session } from "../src/middleware";
+import { cache, email, upload, sse } from "../src/helpers";
+import { openapi } from "../src/scheduler";
+import { db } from "../src/db";
 import { z } from "zod";
 import { Html, Head, Body, H1, P, render, Div } from '../src/jsx';
+import { unlink } from "fs/promises";
 
 // ==========================================
 // ROUTER TESTS (Existing)
@@ -28,21 +30,21 @@ describe("Router - Basic Routes", () => {
     expect(data.message).toBe("hello");
   });
 
-    test("POST request works", async () => {
-    app.post("/create", (req) => ({ body: req.parsedBody })); // Change req.body to req.parsedBody
+  test("POST request works", async () => {
+    app.post("/create", (req) => ({ body: req.parsedBody }));
     
     const res = await app.fetch(
-        new Request("http://localhost/create", {
+      new Request("http://localhost/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: "Alice" })
-        })
+      })
     );
     const data = await res.json();
     
     expect(res.status).toBe(200);
     expect(data.body.name).toBe("Alice");
-    });
+  });
 
   test("PUT request works", async () => {
     app.put("/update", (req) => ({ updated: true }));
@@ -226,7 +228,6 @@ describe("Middleware - JWT", () => {
     const data = await res.json();
     
     expect(res.status).toBe(200);
-    // Note: The actual payload fields depend on how your final signJWT is implemented
     expect(data.user.name).toBe("Alice");
   });
 
@@ -265,7 +266,6 @@ describe("Middleware - JWT", () => {
       return { user: req.user };
     });
 
-    // Create token that expired 1 hour ago
     const token = await signJWT({ id: 1 }, SECRET_KEY, "-1h");
     
     const res = await app.fetch(
@@ -281,10 +281,9 @@ describe("Middleware - JWT", () => {
 describe("Middleware - Rate Limit", () => {
   test("Allows requests under limit", async () => {
     const app = prince();
-    app.use(rateLimit(5, 60)); // 5 requests per 60 seconds
+    app.use(rateLimit(5, 60));
     app.get("/api", () => ({ ok: true }));
 
-    // Make 5 requests
     for (let i = 0; i < 5; i++) {
       const res = await app.fetch(new Request("http://localhost/api"));
       expect(res.status).toBe(200);
@@ -293,16 +292,14 @@ describe("Middleware - Rate Limit", () => {
 
   test("Blocks requests over limit", async () => {
     const app = prince();
-    app.use(rateLimit(3, 60)); // 3 requests per 60 seconds
+    app.use(rateLimit(3, 60));
     app.get("/api", () => ({ ok: true }));
 
-    // Make 3 successful requests
     for (let i = 0; i < 3; i++) {
       const res = await app.fetch(new Request("http://localhost/api"));
       expect(res.status).toBe(200);
     }
 
-    // 4th request should be blocked
     const blocked = await app.fetch(new Request("http://localhost/api"));
     expect(blocked.status).toBe(429);
     
@@ -315,7 +312,6 @@ describe("Middleware - Rate Limit", () => {
     app.use(rateLimit(2, 60));
     app.get("/api", () => ({ ok: true }));
 
-    // IP 1: 2 requests (should work)
     const res1 = await app.fetch(
       new Request("http://localhost/api", {
         headers: { "x-real-ip": "192.168.1.1" }
@@ -329,7 +325,6 @@ describe("Middleware - Rate Limit", () => {
     expect(res1.status).toBe(200);
     expect(res2.status).toBe(200);
 
-    // IP 2: Should still work (different IP)
     const res3 = await app.fetch(
       new Request("http://localhost/api", {
         headers: { "x-real-ip": "192.168.1.2" }
@@ -383,7 +378,7 @@ describe("Middleware - Validation", () => {
 
     expect(res.status).toBe(400);
     const data = await res.json();
-    expect(data.error).toBe("Validation failed"); // Updated error message
+    expect(data.error).toBe("Validation failed");
   });
 
   test("Missing required fields rejected", async () => {
@@ -400,7 +395,7 @@ describe("Middleware - Validation", () => {
       new Request("http://localhost/user", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: "Alice" }) // Missing email
+        body: JSON.stringify({ name: "Alice" })
       })
     );
 
@@ -411,7 +406,7 @@ describe("Middleware - Validation", () => {
 describe("Middleware - CORS", () => {
   test("OPTIONS request returns CORS headers", async () => {
     const app = prince();
-    app.use(cors("*")); // CORS must be registered as middleware
+    app.use(cors("*"));
     app.get("/api", () => ({ ok: true }));
 
     const res = await app.fetch(
@@ -434,69 +429,350 @@ describe("Middleware - CORS", () => {
   });
 });
 
-// ==========================================
-// NEW MIDDLEWARE & UTILITY TESTS
-// ==========================================
-
 describe("Middleware - Logger", () => {
   test("Logger records method, path, status, and time", async () => {
     const app = prince();
     app.use(logger());
     app.get("/log-me", () => new Response("ok"));
 
-    // Spy on console.log to capture output
     const consoleLogSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
 
     await app.fetch(new Request("http://localhost/log-me", { method: "GET" }));
     
-    // Check the last console log call. We look for the general format.
     const logCall = consoleLogSpy.mock.calls.find(call => call[0].startsWith('GET /log-me'));
     
     expect(logCall).toBeDefined();
-    // Regex checks for 'GET /log-me 200 <number>ms'
     expect(logCall![0]).toMatch(/^GET \/log-me 200 \d+ms$/);
 
     consoleLogSpy.mockRestore();
   });
 });
 
-describe("Utility - openapi", () => {
-  test("openapi utility returns correct base structure", () => {
-    const info = { title: "Test API", version: "1.0.0" };
-    const spec = openapi(info);
+// ==========================================
+// NEW MIDDLEWARE TESTS
+// ==========================================
+
+describe("Middleware - Auth", () => {
+  const SECRET_KEY = new TextEncoder().encode("test-secret-key");
+
+  test("auth() blocks requests without JWT", async () => {
+    const app = prince();
+    app.use(jwt(SECRET_KEY));
+    app.get("/protected", auth(), () => ({ data: "secret" }));
+
+    const res = await app.fetch(new Request("http://localhost/protected"));
     
-    expect(spec.openapi).toBe("3.0.0");
-    expect(spec.info).toEqual(info);
-    expect(spec.paths).toEqual({});
+    expect(res.status).toBe(401);
+    const data = await res.json();
+    expect(data.error).toBe("Unauthorized");
+  });
+
+  test("auth() allows requests with valid JWT", async () => {
+    const app = prince();
+    app.use(jwt(SECRET_KEY));
+    app.get("/protected", auth(), (req) => ({ user: req.user.name }));
+
+    const token = await signJWT({ name: "Alice" }, SECRET_KEY, "1h");
+
+    const res = await app.fetch(
+      new Request("http://localhost/protected", {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+    );
+    
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.user).toBe("Alice");
+  });
+
+  test("auth() checks roles correctly", async () => {
+    const app = prince();
+    app.use(jwt(SECRET_KEY));
+    app.get("/admin", auth({ roles: ["admin"] }), () => ({ ok: true }));
+
+    // User without admin role
+    const userToken = await signJWT({ role: "user" }, SECRET_KEY, "1h");
+    const res1 = await app.fetch(
+      new Request("http://localhost/admin", {
+        headers: { Authorization: `Bearer ${userToken}` }
+      })
+    );
+    expect(res1.status).toBe(403);
+
+    // User with admin role
+    const adminToken = await signJWT({ role: "admin" }, SECRET_KEY, "1h");
+    const res2 = await app.fetch(
+      new Request("http://localhost/admin", {
+        headers: { Authorization: `Bearer ${adminToken}` }
+      })
+    );
+    expect(res2.status).toBe(200);
+  });
+
+  test("auth() supports array of roles", async () => {
+    const app = prince();
+    app.use(jwt(SECRET_KEY));
+    app.get("/protected", auth({ roles: ["admin", "moderator"] }), () => ({ ok: true }));
+
+    const token = await signJWT({ role: "moderator" }, SECRET_KEY, "1h");
+    const res = await app.fetch(
+      new Request("http://localhost/protected", {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+    );
+    
+    expect(res.status).toBe(200);
   });
 });
+
+describe("Middleware - API Key", () => {
+  test("apiKey() blocks requests without key", async () => {
+    const app = prince();
+    app.use(apiKey({ keys: ["secret123"] }));
+    app.get("/api", () => ({ data: "value" }));
+
+    const res = await app.fetch(new Request("http://localhost/api"));
+    
+    expect(res.status).toBe(401);
+    const data = await res.json();
+    expect(data.error).toBe("Invalid API key");
+  });
+
+  test("apiKey() allows requests with valid key", async () => {
+    const app = prince();
+    app.use(apiKey({ keys: ["secret123", "secret456"] }));
+    app.get("/api", (req) => ({ key: req.apiKey }));
+
+    const res = await app.fetch(
+      new Request("http://localhost/api", {
+        headers: { "x-api-key": "secret123" }
+      })
+    );
+    
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.key).toBe("secret123");
+  });
+
+  test("apiKey() supports custom header", async () => {
+    const app = prince();
+    app.use(apiKey({ keys: ["key123"], header: "Authorization" }));
+    app.get("/api", () => ({ ok: true }));
+
+    const res = await app.fetch(
+      new Request("http://localhost/api", {
+        headers: { "Authorization": "key123" }
+      })
+    );
+    
+    expect(res.status).toBe(200);
+  });
+
+  test("apiKey() rejects invalid keys", async () => {
+    const app = prince();
+    app.use(apiKey({ keys: ["valid_key"] }));
+    app.get("/api", () => ({ ok: true }));
+
+    const res = await app.fetch(
+      new Request("http://localhost/api", {
+        headers: { "x-api-key": "invalid_key" }
+      })
+    );
+    
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("Middleware - Compression", () => {
+  test("compress() compresses large JSON responses", async () => {
+    const app = prince();
+    app.use(compress({ threshold: 100 }));
+    app.get("/data", () => ({ 
+      data: "x".repeat(500) // Large response
+    }));
+
+    const res = await app.fetch(
+      new Request("http://localhost/data", {
+        headers: { "Accept-Encoding": "gzip" }
+      })
+    );
+    
+    expect(res.headers.get("Content-Encoding")).toBe("gzip");
+  });
+
+  test("compress() skips small responses", async () => {
+    const app = prince();
+    app.use(compress({ threshold: 1000 }));
+    app.get("/small", () => ({ data: "small" }));
+
+    const res = await app.fetch(
+      new Request("http://localhost/small", {
+        headers: { "Accept-Encoding": "gzip" }
+      })
+    );
+    
+    expect(res.headers.get("Content-Encoding")).toBeNull();
+  });
+
+  test("compress() respects filter function", async () => {
+    const app = prince();
+    app.use(compress({ 
+      threshold: 10,
+      filter: (req) => !req.url.includes("/no-compress")
+    }));
+    app.get("/compress", () => ({ data: "x".repeat(100) }));
+    app.get("/no-compress", () => ({ data: "x".repeat(100) }));
+
+    const res1 = await app.fetch(
+      new Request("http://localhost/compress", {
+        headers: { "Accept-Encoding": "gzip" }
+      })
+    );
+    expect(res1.headers.get("Content-Encoding")).toBe("gzip");
+
+    const res2 = await app.fetch(
+      new Request("http://localhost/no-compress", {
+        headers: { "Accept-Encoding": "gzip" }
+      })
+    );
+    expect(res2.headers.get("Content-Encoding")).toBeNull();
+  });
+
+  test("compress() only compresses text-based content", async () => {
+    const app = prince();
+    app.use(compress({ threshold: 10 }));
+    app.get("/json", () => ({ data: "x".repeat(100) }));
+    app.get("/binary", () => new Response(new Uint8Array(100)));
+
+    const res1 = await app.fetch(
+      new Request("http://localhost/json", {
+        headers: { "Accept-Encoding": "gzip" }
+      })
+    );
+    expect(res1.headers.get("Content-Encoding")).toBe("gzip");
+
+    const res2 = await app.fetch(
+      new Request("http://localhost/binary", {
+        headers: { "Accept-Encoding": "gzip" }
+      })
+    );
+    expect(res2.headers.get("Content-Encoding")).toBeNull();
+  });
+});
+
+describe("Middleware - Session", () => {
+  test("session() creates and persists session", async () => {
+    const app = prince();
+    app.use(session({ secret: "test-secret", maxAge: 3600 }));
+    app.get("/increment", (req) => {
+      req.session.count = (req.session.count || 0) + 1;
+      return { count: req.session.count };
+    });
+
+    // First request
+    const res1 = await app.fetch(new Request("http://localhost/increment"));
+    const data1 = await res1.json();
+    expect(data1.count).toBe(1);
+    
+    // Get session cookie
+    const cookie = res1.headers.get("Set-Cookie");
+    expect(cookie).toBeDefined();
+    const sessionId = cookie!.match(/prince\.sid=([^;]+)/)?.[1];
+
+    // Second request with cookie
+    const res2 = await app.fetch(
+      new Request("http://localhost/increment", {
+        headers: { Cookie: `prince.sid=${sessionId}` }
+      })
+    );
+    const data2 = await res2.json();
+    expect(data2.count).toBe(2);
+  });
+
+  test("session() supports custom cookie name", async () => {
+    const app = prince();
+    app.use(session({ secret: "test", name: "custom_sid" }));
+    app.get("/test", (req) => {
+      req.session.data = "value";
+      return { ok: true };
+    });
+
+    const res = await app.fetch(new Request("http://localhost/test"));
+    const cookie = res.headers.get("Set-Cookie");
+    
+    expect(cookie).toContain("custom_sid=");
+  });
+
+  test("session.destroy() clears session", async () => {
+    const app = prince();
+    app.use(session({ secret: "test" }));
+    app.get("/set", (req) => {
+      req.session.user = "Alice";
+      return { ok: true };
+    });
+    app.get("/destroy", (req) => {
+      req.session.destroy();
+      return { ok: true };
+    });
+    app.get("/get", (req) => ({ user: req.session.user }));
+
+    // Set session
+    const res1 = await app.fetch(new Request("http://localhost/set"));
+    const cookie = res1.headers.get("Set-Cookie")!.match(/prince\.sid=([^;]+)/)?.[1];
+
+    // Verify session exists
+    const res2 = await app.fetch(
+      new Request("http://localhost/get", {
+        headers: { Cookie: `prince.sid=${cookie}` }
+      })
+    );
+    const data2 = await res2.json();
+    expect(data2.user).toBe("Alice");
+
+    // Destroy session
+    await app.fetch(
+      new Request("http://localhost/destroy", {
+        headers: { Cookie: `prince.sid=${cookie}` }
+      })
+    );
+
+    // Verify session is gone
+    const res3 = await app.fetch(
+      new Request("http://localhost/get", {
+        headers: { Cookie: `prince.sid=${cookie}` }
+      })
+    );
+    const data3 = await res3.json();
+    expect(data3.user).toBeUndefined();
+  });
+});
+
+// ==========================================
+// HELPER TESTS
+// ==========================================
 
 describe("Helper - cache", () => {
   test("Cache middleware returns cached data on hit", async () => {
     const app = prince();
     let handlerCalled = 0;
     
-    // The handler will return an object
     const handler = async (req: any) => {
       handlerCalled++;
       return { data: `result-${handlerCalled}` };
     };
 
-    // Use cache middleware with 60s TTL
     app.get("/cached", cache(60)(handler)); 
 
-    // First request: Cache miss, handler called
     const res1 = await app.fetch(new Request("http://localhost/cached"));
     const data1 = await res1.json();
     
     expect(handlerCalled).toBe(1);
     expect(data1.data).toBe("result-1");
 
-    // Second request immediately after: Cache hit, handler NOT called
     const res2 = await app.fetch(new Request("http://localhost/cached"));
     const data2 = await res2.json();
     
-    expect(handlerCalled).toBe(1); // Handler call count remains 1
+    expect(handlerCalled).toBe(1);
     expect(data2.data).toBe("result-1");
   });
 });
@@ -505,14 +781,12 @@ describe("Helper - upload", () => {
   test("Upload handler processes form data and returns file info", async () => {
     const app = prince();
     
-    // Use upload as route handler directly
     app.post("/upload", upload());
 
     const fileName = "test.txt";
     const fileContent = "test content";
     
     const formData = new FormData();
-    // Use Blob instead of File for better compatibility
     const blob = new Blob([fileContent], { type: "text/plain" });
     formData.append("file", blob, fileName);
     
@@ -520,19 +794,16 @@ describe("Helper - upload", () => {
       new Request("http://localhost/upload", {
         method: "POST",
         body: formData,
-        // Let FormData set the content-type automatically with boundary
       })
     );
 
     const data = await res.json();
     
     expect(res.status).toBe(200);
-    // The response should either have the file info or an error
     if (data.name) {
       expect(data.name).toBe(fileName);
       expect(data.size).toBe(fileContent.length);
     } else {
-      // If it returns an error, let's see what it is
       console.log("Upload error response:", data);
       expect(data.error).toBeDefined();
     }
@@ -552,10 +823,8 @@ describe("Helper - email", () => {
     } as any);
   });
 
-  // Fix: Use the correct afterEach import
   afterEach(() => {
     fetchSpy.mockRestore();
-    // Clean up environment variable
     if (process.env.RESEND_KEY) {
       delete process.env.RESEND_KEY;
     }
@@ -577,6 +846,135 @@ describe("Helper - email", () => {
     expect(body.to).toBe("user@example.com");
     expect(body.subject).toBe("Test Subject");
     expect(body.html).toBe("<h1>Test HTML</h1>");
+  });
+});
+
+describe("Helper - SSE", () => {
+  test("sse() creates event stream", async () => {
+    const app = prince();
+    app.get("/events", sse(), (req) => {
+      req.sseSend({ message: "Hello" });
+      return new Response(null);
+    });
+
+    const res = await app.fetch(new Request("http://localhost/events"));
+    
+    expect(res.headers.get("Content-Type")).toBe("text/event-stream");
+    expect(res.headers.get("Cache-Control")).toBe("no-cache");
+    expect(res.headers.get("Connection")).toBe("keep-alive");
+  });
+
+  test("sse() sends formatted events", async () => {
+    const app = prince();
+    app.get("/stream", sse(), (req) => {
+      req.sseSend({ data: "test" }, "custom-event", "123");
+      return new Response(null);
+    });
+
+    const res = await app.fetch(new Request("http://localhost/stream"));
+    
+    expect(res.body).toBeDefined();
+  });
+});
+
+// ==========================================
+// DATABASE TESTS
+// ==========================================
+
+describe("Database - SQLite", () => {
+  const testDbPath = "./test-db.sqlite";
+
+  afterEach(async () => {
+    try {
+      await unlink(testDbPath);
+    } catch {}
+  });
+
+  test("db.sqlite() creates database", () => {
+    const database = db.sqlite(testDbPath);
+    expect(database).toBeDefined();
+    database.close();
+  });
+
+  test("db.sqlite() initializes with schema", () => {
+    const database = db.sqlite(testDbPath, `
+      CREATE TABLE users (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL
+      )
+    `);
+    
+    database.run("INSERT INTO users (name) VALUES (?)", ["Alice"]);
+    const result = database.get("SELECT * FROM users WHERE name = ?", ["Alice"]);
+    
+    expect(result).toBeDefined();
+    expect(result.name).toBe("Alice");
+    database.close();
+  });
+
+  test("db.query() returns all rows", () => {
+    const database = db.sqlite(testDbPath, `
+      CREATE TABLE items (id INTEGER PRIMARY KEY, value TEXT)
+    `);
+    
+    database.run("INSERT INTO items (value) VALUES (?)", ["item1"]);
+    database.run("INSERT INTO items (value) VALUES (?)", ["item2"]);
+    
+    const results = database.query("SELECT * FROM items");
+    
+    expect(results.length).toBe(2);
+    expect(results[0].value).toBe("item1");
+    expect(results[1].value).toBe("item2");
+    database.close();
+  });
+
+  test("db.get() returns single row", () => {
+    const database = db.sqlite(testDbPath, `
+      CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT UNIQUE)
+    `);
+    
+    database.run("INSERT INTO users (email) VALUES (?)", ["test@example.com"]);
+    const user = database.get("SELECT * FROM users WHERE email = ?", ["test@example.com"]);
+    
+    expect(user.email).toBe("test@example.com");
+    database.close();
+  });
+
+  test("Database integration with routes", async () => {
+    const app = prince();
+    const database = db.sqlite(testDbPath, `
+      CREATE TABLE posts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        content TEXT
+      )
+    `);
+
+    app.get("/posts", () => database.query("SELECT * FROM posts"));
+    
+    app.post("/posts", (req) => {
+      const { title, content } = req.parsedBody;
+      database.run("INSERT INTO posts (title, content) VALUES (?, ?)", [title, content]);
+      return { success: true };
+    });
+
+    // Create a post
+    await app.fetch(
+      new Request("http://localhost/posts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "Test", content: "Content" })
+      })
+    );
+
+    // Get all posts
+    const res = await app.fetch(new Request("http://localhost/posts"));
+    const data = await res.json();
+    
+    expect(data.length).toBe(1);
+    expect(data[0].title).toBe("Test");
+    
+    database.close();
   });
 });
 
@@ -667,7 +1065,7 @@ describe("Error Handling", () => {
   });
 
   test("Dev mode shows stack trace", async () => {
-    const app = prince(true); // Dev mode
+    const app = prince(true);
 
     app.get("/error", () => {
       throw new Error("Dev error");
@@ -680,6 +1078,10 @@ describe("Error Handling", () => {
     expect(data.stack).toBeDefined();
   });
 });
+
+// ==========================================
+// JSX SSR TESTS
+// ==========================================
 
 describe("JSX SSR", () => {
   let app: ReturnType<typeof prince>;
@@ -787,12 +1189,29 @@ describe("JSX SSR", () => {
   });
 });
 
-// Add Radix router specific tests
+// ==========================================
+// UTILITY TESTS
+// ==========================================
+
+describe("Utility - openapi", () => {
+  test("openapi utility returns correct base structure", () => {
+    const info = { title: "Test API", version: "1.0.0" };
+    const spec = openapi(info);
+    
+    expect(spec.openapi).toBe("3.0.0");
+    expect(spec.info).toEqual(info);
+    expect(spec.paths).toEqual({});
+  });
+});
+
+// ==========================================
+// RADIX ROUTER PERFORMANCE TESTS
+// ==========================================
+
 describe("Radix Router Performance", () => {
   test("Static routes use Map lookup", async () => {
     const app = prince();
     
-    // Add multiple static routes
     app.get("/api/users", () => ({ users: [] }));
     app.get("/api/posts", () => ({ posts: [] }));
     app.get("/api/comments", () => ({ comments: [] }));
@@ -807,7 +1226,6 @@ describe("Radix Router Performance", () => {
   test("Radix tree handles common prefixes", async () => {
     const app = prince();
     
-    // These should benefit from Radix tree structure
     app.get("/api/v1/users", () => ({ v: "v1" }));
     app.get("/api/v2/users", () => ({ v: "v2" }));
     app.get("/api/v1/posts", () => ({ v: "v1-posts" }));
@@ -817,6 +1235,113 @@ describe("Radix Router Performance", () => {
     
     expect(res1.status).toBe(200);
     expect(res2.status).toBe(200);
+  });
+});
+
+// ==========================================
+// INTEGRATION TESTS
+// ==========================================
+
+describe("Integration - Full Stack", () => {
+  const SECRET_KEY = new TextEncoder().encode("integration-key");
+  const testDbPath = "./integration-test.sqlite";
+
+  afterEach(async () => {
+    try {
+      await unlink(testDbPath);
+    } catch {}
+  });
+
+  test("Complete API with auth, validation, and database", async () => {
+    const app = prince();
+    const database = db.sqlite(testDbPath, `
+      CREATE TABLE tasks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        completed BOOLEAN DEFAULT 0,
+        user_id TEXT NOT NULL
+      )
+    `);
+
+    // Middleware
+    app.use(jwt(SECRET_KEY));
+    app.use(cors("*"));
+    app.use(logger());
+
+    // Public route
+    app.post("/login", () => {
+      const token = signJWT({ id: "user123", role: "user" }, SECRET_KEY, "1h");
+      return { token };
+    });
+
+    // Protected routes
+    app.get("/tasks", auth(), (req) => {
+      const tasks = database.query(
+        "SELECT * FROM tasks WHERE user_id = ?",
+        [req.user.id]
+      );
+      return { tasks };
+    });
+
+    app.post("/tasks", auth(), validate(z.object({
+      title: z.string().min(1)
+    })), (req) => {
+      database.run(
+        "INSERT INTO tasks (title, user_id) VALUES (?, ?)",
+        [req.parsedBody.title, req.user.id]
+      );
+      return { success: true };
+    });
+
+    // Test flow
+    const token = await signJWT({ id: "user123", role: "user" }, SECRET_KEY, "1h");
+
+    // Create task
+    const res1 = await app.fetch(
+      new Request("http://localhost/tasks", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify({ title: "Test Task" })
+      })
+    );
+    expect(res1.status).toBe(200);
+
+    // Get tasks
+    const res2 = await app.fetch(
+      new Request("http://localhost/tasks", {
+        headers: { "Authorization": `Bearer ${token}` }
+      })
+    );
+    const data = await res2.json();
+    expect(data.tasks.length).toBe(1);
+    expect(data.tasks[0].title).toBe("Test Task");
+
+    database.close();
+  });
+
+  test("Rate limiting with sessions", async () => {
+    const app = prince();
+    
+    app.use(session({ secret: "test-secret" }));
+    app.use(rateLimit(3, 60));
+    
+    app.get("/api", (req) => {
+      req.session.requests = (req.session.requests || 0) + 1;
+      return { requests: req.session.requests };
+    });
+
+    // First 3 requests should work
+    for (let i = 0; i < 3; i++) {
+      const res = await app.fetch(new Request("http://localhost/api"));
+      expect(res.status).toBe(200);
+    }
+
+    // 4th should be rate limited
+    const blocked = await app.fetch(new Request("http://localhost/api"));
+    expect(blocked.status).toBe(429);
   });
 });
 
