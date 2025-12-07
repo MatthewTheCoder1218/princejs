@@ -71,3 +71,33 @@ export const upload = () => {
     }
   };
 };
+
+// === SSE ===
+export const sse = () => {
+  return (req: PrinceRequest) => {
+    let controller: ReadableStreamDefaultController;
+    
+    const stream = new ReadableStream({
+      start(c) {
+        controller = c;
+        
+        // Attach send function to request
+        req.sseSend = (data: any, event?: string, id?: string) => {
+          let message = "";
+          if (event) message += `event: ${event}\n`;
+          if (id) message += `id: ${id}\n`;
+          message += `data: ${typeof data === "string" ? data : JSON.stringify(data)}\n\n`;
+          controller.enqueue(new TextEncoder().encode(message));
+        };
+      }
+    });
+    
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive"
+      }
+    });
+  };
+};
