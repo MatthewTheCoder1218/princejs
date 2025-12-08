@@ -96,7 +96,7 @@ app
 
 ```ts
 import { prince } from "princejs";
-import { cors, logger, rateLimit, auth, apiKey, jwt, session, compress } from "princejs/middleware";
+import { cors, logger, rateLimit, auth, apiKey, jwt, session, compress, serve } from "princejs/middleware";
 import { validate } from "princejs/validation";
 import { cache, upload, sse } from "princejs/helpers";
 import { cron } from "princejs/scheduler";
@@ -109,6 +109,8 @@ const app = prince(true);
 app.use(cors());
 app.use(logger());
 app.use(rateLimit({ max: 100, window: 60 }));
+
+app.use(serve({ root: "./public" }));
 
 app.use(validate(z.object({ name: z.string() })));
 
