@@ -1,5 +1,7 @@
 # 👑 **PrinceJS**
 
+![PrinceJS Image](./src/images/og.png)
+
 ### ⚡ Ultra-clean, modern & minimal Bun web framework built by a 13 year old. Among the top three in performance.
 
 ![npm](https://img.shields.io/npm/v/princejs)
