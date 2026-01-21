@@ -1,4 +1,4 @@
-﻿// prince.ts - Fixed router implementation
+﻿// prince.ts - Complete framework with route-level middleware
 // @ts-nocheck 
 /// <reference types="bun-types" />
 
@@ -12,6 +12,9 @@ export interface PrinceRequest extends Request {
   user?: any;
   params?: Record<string, string>;
   query?: URLSearchParams;
+  session?: any;
+  apiKey?: string;
+  sseSend?: (data: any, event?: string, id?: string) => void;
   [key: string]: any;
 }
 
@@ -29,12 +32,13 @@ type RouteEntry = {
   path: string;
   parts: string[];
   handler: RouteHandler;
+  middlewares: Middleware[];
 };
 
-// SIMPLIFIED RADIX NODE - Like Hono's
 interface RadixNode {
   pattern: string;
   handlers: Record<string, RouteHandler>;
+  middlewares: Record<string, Middleware[]>;
   children: RadixNode[];
   paramName?: string;
   isWildcard?: boolean;
@@ -93,9 +97,11 @@ export class Prince {
   private openapiData: any = null;
   private router: RadixNode | null = null;
   private staticRoutes: Map<string, RouteHandler> = new Map();
+  private staticMiddlewares: Map<string, Middleware[]> = new Map();
   private routeCache = new Map<string, { 
     handler: RouteHandler; 
     params: Record<string, string>;
+    middlewares: Middleware[];
     allowedMethods?: string[];
   }>();
 
@@ -122,23 +128,28 @@ export class Prince {
     return new ResponseBuilder();
   }
 
-  // ROUTING API
-  get(path: string, handler: RouteHandler) { return this.add("GET", path, handler); }
-  post(path: string, handler: RouteHandler) { return this.add("POST", path, handler); }
-  put(path: string, handler: RouteHandler) { return this.add("PUT", path, handler); }
-  delete(path: string, handler: RouteHandler) { return this.add("DELETE", path, handler); }
-  patch(path: string, handler: RouteHandler) { return this.add("PATCH", path, handler); }
-  options(path: string, handler: RouteHandler) { return this.add("OPTIONS", path, handler); }
+  // ROUTING API - with optional route-level middleware
+  get(path: string, ...args: (RouteHandler | Middleware)[]) { return this.add("GET", path, args); }
+  post(path: string, ...args: (RouteHandler | Middleware)[]) { return this.add("POST", path, args); }
+  put(path: string, ...args: (RouteHandler | Middleware)[]) { return this.add("PUT", path, args); }
+  delete(path: string, ...args: (RouteHandler | Middleware)[]) { return this.add("DELETE", path, args); }
+  patch(path: string, ...args: (RouteHandler | Middleware)[]) { return this.add("PATCH", path, args); }
+  options(path: string, ...args: (RouteHandler | Middleware)[]) { return this.add("OPTIONS", path, args); }
   ws(path: string, handlers: WebSocketHandler) {
     this.wsRoutes[path] = handlers;
     return this;
   }
 
-  private add(method: string, path: string, handler: RouteHandler) {
+  private add(method: string, path: string, args: (RouteHandler | Middleware)[]) {
     if (!path.startsWith("/")) path = "/" + path;
     if (path !== "/" && path.endsWith("/")) path = path.slice(0, -1);
     const parts = path === "/" ? [""] : path.split("/").slice(1);
-    this.rawRoutes.push({ method, path, parts, handler });
+    
+    // Last arg is always the handler, rest are middleware
+    const handler = args[args.length - 1] as RouteHandler;
+    const middlewares = args.slice(0, -1) as Middleware[];
+    
+    this.rawRoutes.push({ method, path, parts, handler, middlewares });
     
     // Cache static routes
     const isStaticRoute = !parts.some(part => 
@@ -148,6 +159,9 @@ export class Prince {
     if (isStaticRoute) {
       const staticKey = `${method}:${path}`;
       this.staticRoutes.set(staticKey, handler);
+      if (middlewares.length > 0) {
+        this.staticMiddlewares.set(staticKey, middlewares);
+      }
     }
     
     this.routeCache.clear();
@@ -155,21 +169,20 @@ export class Prince {
     return this;
   }
 
-  // SIMPLIFIED RADIX TREE BUILDER
   private buildRouter(): RadixNode {
     if (this.router) return this.router;
 
     const root: RadixNode = {
       pattern: '',
       handlers: {},
+      middlewares: {},
       children: []
     };
 
     for (const route of this.rawRoutes) {
       if (this.staticRoutes.has(`${route.method}:${route.path}`)) {
-        continue; // Skip static routes
+        continue;
       }
-
       this.insertRoute(root, route);
     }
 
@@ -184,7 +197,6 @@ export class Prince {
       const part = route.parts[i];
       let found = false;
 
-      // Check existing children
       for (const child of currentNode.children) {
         if (child.pattern === part) {
           currentNode = child;
@@ -194,14 +206,13 @@ export class Prince {
       }
 
       if (!found) {
-        // Create new node
         const newNode: RadixNode = {
           pattern: part,
           handlers: {},
+          middlewares: {},
           children: []
         };
 
-        // Determine node type
         if (part.startsWith(':')) {
           newNode.paramName = part.slice(1);
         } else if (part === '*') {
@@ -215,14 +226,16 @@ export class Prince {
       }
     }
 
-    // Add handler to the final node
     currentNode.handlers[route.method] = route.handler;
+    if (route.middlewares.length > 0) {
+      currentNode.middlewares[route.method] = route.middlewares;
+    }
   }
 
-  // FIXED ROUTE MATCHING
   private findRoute(method: string, pathname: string): { 
     handler: RouteHandler; 
     params: Record<string, string>;
+    middlewares: Middleware[];
     allowedMethods?: string[];
   } | null {
     const cacheKey = `${method}:${pathname}`;
@@ -235,7 +248,11 @@ export class Prince {
     const staticKey = `${method}:${pathname}`;
     const staticHandler = this.staticRoutes.get(staticKey);
     if (staticHandler) {
-      const result = { handler: staticHandler, params: {} };
+      const result = { 
+        handler: staticHandler, 
+        params: {},
+        middlewares: this.staticMiddlewares.get(staticKey) || []
+      };
       this.routeCache.set(cacheKey, result);
       return result;
     }
@@ -269,7 +286,8 @@ export class Prince {
     if (pathExists) {
       const methodNotAllowed = { 
         handler: null as any, 
-        params: {}, 
+        params: {},
+        middlewares: [],
         allowedMethods: Array.from(allowedMethods) 
       };
       this.routeCache.set(cacheKey, methodNotAllowed);
@@ -285,10 +303,7 @@ export class Prince {
     const requestParts = requestPath === "/" ? [""] : requestPath.split("/").slice(1);
     
     if (routeParts.length !== requestParts.length) {
-      // Check for catch-all
-      if (routeParts.includes('**')) {
-        return true;
-      }
+      if (routeParts.includes('**')) return true;
       return false;
     }
 
@@ -297,7 +312,7 @@ export class Prince {
       const requestPart = requestParts[i];
 
       if (routePart.startsWith(':') || routePart === '*' || routePart === '**') {
-        continue; // Params and wildcards match anything
+        continue;
       }
       
       if (routePart !== requestPart) {
@@ -308,15 +323,15 @@ export class Prince {
     return true;
   }
 
-  private matchRoute(node: RadixNode, segments: string[], method: string, params: Record<string, string> = {}, index = 0): { handler: RouteHandler; params: Record<string, string> } | null {
+  private matchRoute(node: RadixNode, segments: string[], method: string, params: Record<string, string> = {}, index = 0): { handler: RouteHandler; params: Record<string, string>; middlewares: Middleware[] } | null {
     if (index === segments.length) {
       const handler = node.handlers[method];
-      return handler ? { handler, params } : null;
+      const middlewares = node.middlewares[method] || [];
+      return handler ? { handler, params, middlewares } : null;
     }
 
     const segment = segments[index];
 
-    // Check static children first
     for (const child of node.children) {
       if (!child.paramName && !child.isWildcard && !child.isCatchAll) {
         if (child.pattern === segment) {
@@ -326,7 +341,6 @@ export class Prince {
       }
     }
 
-    // Check parameter nodes
     for (const child of node.children) {
       if (child.paramName) {
         params[child.paramName] = segment;
@@ -336,7 +350,6 @@ export class Prince {
       }
     }
 
-    // Check wildcard nodes
     for (const child of node.children) {
       if (child.isWildcard) {
         const result = this.matchRoute(child, segments, method, params, index + 1);
@@ -344,12 +357,12 @@ export class Prince {
       }
     }
 
-    // Check catch-all nodes
     for (const child of node.children) {
       if (child.isCatchAll) {
         const handler = child.handlers[method];
+        const middlewares = child.middlewares[method] || [];
         if (handler) {
-          return { handler, params };
+          return { handler, params, middlewares };
         }
       }
     }
@@ -357,7 +370,6 @@ export class Prince {
     return null;
   }
 
-  // BODY PARSING (same as before)
   private async parseBody(req: Request): Promise<any> {
     const ct = req.headers.get("content-type") || "";
     const clonedReq = req.clone();
@@ -398,7 +410,8 @@ export class Prince {
     req: PrinceRequest, 
     handler: RouteHandler, 
     params: Record<string, string>, 
-    query: URLSearchParams
+    query: URLSearchParams,
+    routeMiddlewares: Middleware[]
   ): Promise<Response> {
     Object.defineProperty(req, 'params', { value: params, writable: true, configurable: true });
     Object.defineProperty(req, 'query', { value: query, writable: true, configurable: true });
@@ -421,10 +434,15 @@ export class Prince {
       configurable: true 
     });
 
+    // OPTIMIZED: Only create combined array if route has middleware
+    const allMiddlewares = routeMiddlewares.length > 0 
+      ? [...this.middlewares, ...routeMiddlewares]
+      : this.middlewares;
+    
     let i = 0;
     const next = async (): Promise<Response> => {
-      while (i < this.middlewares.length) {
-        const result = await this.middlewares[i++](req, next);
+      while (i < allMiddlewares.length) {
+        const result = await allMiddlewares[i++](req, next);
         if (result instanceof Response) return result;
       }
 
@@ -463,7 +481,7 @@ export class Prince {
       );
     }
 
-    return this.executeHandler(r, routeMatch.handler, routeMatch.params, url.searchParams);
+    return this.executeHandler(r, routeMatch.handler, routeMatch.params, url.searchParams, routeMatch.middlewares);
   }
 
   async fetch(req: Request): Promise<Response> {
@@ -487,11 +505,10 @@ export class Prince {
       fetch: (req, server) => {
         const url = new URL(req.url);
         
-        // WebSocket upgrade check (zero overhead for non-WS requests)
         if (self.wsRoutes[url.pathname] && server.upgrade(req, {
           data: { path: url.pathname }
         })) {
-          return; // Upgraded to WebSocket
+          return;
         }
         
         return self.fetch(req);

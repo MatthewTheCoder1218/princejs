@@ -449,6 +449,165 @@ describe("Middleware - Logger", () => {
 });
 
 // ==========================================
+// ROUTE-LEVEL MIDDLEWARE TESTS
+// ==========================================
+
+describe("Route-Level Middleware", () => {
+  let app: ReturnType<typeof prince>;
+
+  beforeEach(() => {
+    app = prince();
+  });
+
+  test("Route without middleware has zero overhead", async () => {
+    app.get("/public", () => ({ msg: "public" }));
+    const res = await app.fetch(new Request("http://localhost/public"));
+    const data = await res.json();
+    expect(res.status).toBe(200);
+    expect(data.msg).toBe("public");
+  });
+
+  test("Single route middleware executes", async () => {
+    const requireAuth = async (req: any, next: any) => {
+      const token = req.headers.get("Authorization");
+      if (!token) return new Response("Unauthorized", { status: 401 });
+      req.user = { id: 1, name: "Alice" };
+      return next();
+    };
+
+    app.get("/protected", requireAuth, async (req) => {
+      return { user: req.user };
+    });
+
+    const res1 = await app.fetch(new Request("http://localhost/protected"));
+    expect(res1.status).toBe(401);
+
+    const res2 = await app.fetch(
+      new Request("http://localhost/protected", {
+        headers: { Authorization: "Bearer token123" }
+      })
+    );
+    const data = await res2.json();
+    expect(res2.status).toBe(200);
+    expect(data.user.name).toBe("Alice");
+  });
+
+  test("Multiple route middlewares execute in order", async () => {
+    const mw1 = async (req: any, next: any) => {
+      req.steps = ["mw1"];
+      return next();
+    };
+    const mw2 = async (req: any, next: any) => {
+      req.steps.push("mw2");
+      return next();
+    };
+    const mw3 = async (req: any, next: any) => {
+      req.steps.push("mw3");
+      return next();
+    };
+
+    app.get("/chain", mw1, mw2, mw3, async (req) => {
+      req.steps.push("handler");
+      return { steps: req.steps };
+    });
+
+    const res = await app.fetch(new Request("http://localhost/chain"));
+    const data = await res.json();
+    expect(data.steps).toEqual(["mw1", "mw2", "mw3", "handler"]);
+  });
+
+  test("Route middleware can short-circuit", async () => {
+    const requireAdmin = async (req: any, next: any) => {
+      if (!req.headers.get("X-Admin")) {
+        return new Response(
+          JSON.stringify({ error: "Admin required" }),
+          { status: 403, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      return next();
+    };
+
+    app.delete("/admin/delete", requireAdmin, () => ({ deleted: true }));
+
+    const res1 = await app.fetch(
+      new Request("http://localhost/admin/delete", { method: "DELETE" })
+    );
+    expect(res1.status).toBe(403);
+
+    const res2 = await app.fetch(
+      new Request("http://localhost/admin/delete", {
+        method: "DELETE",
+        headers: { "X-Admin": "true" }
+      })
+    );
+    expect(res2.status).toBe(200);
+  });
+
+  test("Global and route middleware combine correctly", async () => {
+    const globalMw = async (req: any, next: any) => {
+      req.trace = ["global"];
+      return next();
+    };
+    const routeMw = async (req: any, next: any) => {
+      req.trace.push("route");
+      return next();
+    };
+
+    app.use(globalMw);
+    app.get("/combined", routeMw, async (req) => {
+      req.trace.push("handler");
+      return { trace: req.trace };
+    });
+
+    const res = await app.fetch(new Request("http://localhost/combined"));
+    const data = await res.json();
+    expect(data.trace).toEqual(["global", "route", "handler"]);
+  });
+
+  test("Complex middleware chain", async () => {
+    const SECRET_KEY = new TextEncoder().encode("complex-key");
+    const requireAdmin = async (req: any, next: any) => {
+      if (req.user?.role !== "admin") {
+        return new Response(
+          JSON.stringify({ error: "Admin only" }),
+          { status: 403, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      return next();
+    };
+
+    app.use(jwt(SECRET_KEY));
+    app.post("/admin/action", auth(), requireAdmin, rateLimit(5, 60), validate(z.object({ action: z.string() })), async (req) => {
+      return { success: true, action: req.parsedBody.action, admin: req.user.name };
+    });
+
+    const res1 = await app.fetch(
+      new Request("http://localhost/admin/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "delete" })
+      })
+    );
+    expect(res1.status).toBe(401);
+
+    const adminToken = await signJWT({ id: 2, role: "admin", name: "Admin" }, SECRET_KEY, "1h");
+    const res4 = await app.fetch(
+      new Request("http://localhost/admin/action", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${adminToken}`
+        },
+        body: JSON.stringify({ action: "delete_user" })
+      })
+    );
+    const data4 = await res4.json();
+    expect(res4.status).toBe(200);
+    expect(data4.success).toBe(true);
+  });
+});
+
+// ==========================================
 // NEW MIDDLEWARE TESTS
 // ==========================================
 
