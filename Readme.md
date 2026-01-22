@@ -77,6 +77,8 @@ app
 
 ### Response Compression
 
+### Route-level Middleware
+
 ### Database (SQLite)
 
 ---
@@ -142,12 +144,25 @@ const Page = () => (
   })
 );
 
+const requireAuth = async (req: any, next: any) => {
+  const token = req.headers.get("Authorization");
+  if (!token) return new Response("Unauthorized", { status: 401 });
+  req.user = { id: 1, name: "Alice" };
+  return next();
+};
+
+app.get("/protected", requireAuth, async (req) => {
+  return { user: req.user };
+});
+
 const users = db.sqlite("./db.sqlite", "CREATE TABLE users...");
 
 app.ws("/chat", {
   open: (ws) => ws.send("Welcome!"),
   message: (ws, msg) => ws.send(`Echo: ${msg}`)
 });
+
+app.get("/route-level" )
 
 
 app.get("/protected", auth(), (req) => ({ user: req.user }));
