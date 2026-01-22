@@ -8,7 +8,6 @@ type Next = () => Promise<Response | undefined>;
 type HandlerReturn = Response | { [key: string]: any } | undefined;
 
 // === CORS ===
-// In middleware.ts - Fix CORS middleware
 export const cors = (origin: string = '*') => {
   return async (req: any, next: Function) => {
     if (req.method === 'OPTIONS') {
@@ -64,7 +63,6 @@ export const signJWT = async (payload: any, secret: Uint8Array, expiresIn: strin
   return jwt;
 };
 
-
 export const jwt = (key: Uint8Array) => {
   return async (req: PrinceRequest, next: Next) => {
     const auth = req.headers.get("authorization");
@@ -96,12 +94,11 @@ export const rateLimit = (max: number, window = 60) => {
   const store: Record<string, number> = {};
   
   return async (req: PrinceRequest, next: Next) => {
-    // Try multiple IP sources in order of reliability
     const ip = 
-      req.headers.get("cf-connecting-ip") ||      // Cloudflare
-      req.headers.get("x-real-ip") ||             // Nginx
-      req.headers.get("x-forwarded-for")?.split(",")[0].trim() || // Standard proxy (take first IP)
-      req.headers.get("x-client-ip") ||           // Some proxies
+      req.headers.get("cf-connecting-ip") ||
+      req.headers.get("x-real-ip") ||
+      req.headers.get("x-forwarded-for")?.split(",")[0].trim() ||
+      req.headers.get("x-client-ip") ||
       "unknown";
     
     const key = `${ip}:${Math.floor(Date.now() / (window * 1000))}`;
@@ -123,12 +120,11 @@ export const rateLimit = (max: number, window = 60) => {
       );
     }
     
-    // Clean up old entries periodically (every 100 requests)
     if (Math.random() < 0.01) {
       const now = Math.floor(Date.now() / (window * 1000));
       Object.keys(store).forEach(k => {
         const timestamp = parseInt(k.split(":")[1]);
-        if (now - timestamp > 2) delete store[k]; // Keep last 2 windows
+        if (now - timestamp > 2) delete store[k];
       });
     }
     
@@ -137,28 +133,59 @@ export const rateLimit = (max: number, window = 60) => {
 };
 
 // === VALIDATE ===
-// In middleware.ts - Fix validate middleware
 export const validate = (schema: z.ZodSchema) => {
   return async (req: any, next: Function) => {
-    try {
-      // Use parsedBody instead of body since we fixed body parsing
-      if (req.parsedBody) {
-        const parsed = schema.parse(req.parsedBody);
-        req.parsedBody = parsed; // Replace with validated data
-        // Also update body for backward compatibility
-        Object.defineProperty(req, 'body', { 
-          value: parsed,
-          writable: true,
-          configurable: true 
-        });
+    let bodyData = req.parsedBody;
+    
+    // Mark that we've attempted to parse the body (even if validation fails)
+    let bodyParsed = false;
+    
+    // If parsedBody is not set, parse it now
+    if (!bodyData && ["POST", "PUT", "PATCH"].includes(req.method)) {
+      const ct = req.headers.get("content-type") || "";
+      
+      if (ct.includes("application/json")) {
+        try {
+          const clonedReq = req.clone();
+          const text = await clonedReq.text();
+          if (text) {
+            bodyData = JSON.parse(text);
+            bodyParsed = true;
+          }
+        } catch (parseError) {
+          return new Response(
+            JSON.stringify({ error: 'Invalid JSON' }),
+            { status: 400, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+      } else if (ct.includes("application/x-www-form-urlencoded")) {
+        try {
+          const clonedReq = req.clone();
+          const text = await clonedReq.text();
+          bodyData = Object.fromEntries(new URLSearchParams(text));
+          bodyParsed = true;
+        } catch (parseError) {
+          return new Response(
+            JSON.stringify({ error: 'Invalid form data' }),
+            { status: 400, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
       }
-      return next();
-    } catch (error) {
-      if (error instanceof z.ZodError) {
+    }
+    
+    // Validate the body data
+    if (bodyData) {
+      const result = schema.safeParse(bodyData);
+      
+      if (!result.success) {
+        // Set a flag to prevent double parsing even though validation failed
+        if (bodyParsed) {
+          req.parsedBody = bodyData; // Set the invalid data to prevent re-parsing
+        }
         return new Response(
           JSON.stringify({ 
             error: 'Validation failed', 
-            details: error.errors.map(e => ({
+            details: result.error.issues.map(e => ({
               path: e.path.join('.'),
               message: e.message
             }))
@@ -169,8 +196,16 @@ export const validate = (schema: z.ZodSchema) => {
           }
         );
       }
-      throw error;
+      
+      req.parsedBody = result.data;
+      Object.defineProperty(req, 'body', { 
+        value: result.data,
+        writable: true,
+        configurable: true 
+      });
     }
+    
+    return next();
   };
 };
 
@@ -184,7 +219,6 @@ export const auth = (options?: { roles?: string[] }) => {
       );
     }
     
-    // Role check (only if roles specified)
     if (options?.roles) {
       const userRole = req.user.role || req.user.roles;
       const hasRole = Array.isArray(userRole) 
@@ -205,7 +239,7 @@ export const auth = (options?: { roles?: string[] }) => {
 
 // === API KEY ===
 export const apiKey = (options: { keys: string[]; header?: string }) => {
-  const keySet = new Set(options.keys); // O(1) lookup
+  const keySet = new Set(options.keys);
   const headerName = (options.header || "x-api-key").toLowerCase();
   
   return async (req: PrinceRequest, next: Next) => {
@@ -237,7 +271,6 @@ export const compress = (options?: {
     
     const contentType = response.headers.get("content-type") || "";
     
-    // Only compress text-based responses
     if (!contentType.includes("json") && 
         !contentType.includes("text") && 
         !contentType.includes("javascript") &&
@@ -247,19 +280,16 @@ export const compress = (options?: {
     
     const acceptEncoding = req.headers.get("accept-encoding") || "";
     
-    // Check if client supports compression
     if (!acceptEncoding.includes("gzip") && !acceptEncoding.includes("br")) {
       return response;
     }
     
     const body = await response.text();
     
-    // Don't compress small responses
     if (body.length < threshold) {
       return new Response(body, response);
     }
     
-    // Use Bun's native compression (FAST!)
     const compressed = Bun.gzipSync(new TextEncoder().encode(body));
     
     const headers = new Headers(response.headers);
@@ -284,7 +314,6 @@ export const session = (options: {
   const cookieName = options.name || "prince.sid";
   const maxAge = options.maxAge || 3600;
   
-  // Cleanup old sessions every 5 minutes
   setInterval(() => {
     const now = Date.now();
     for (const [id, data] of sessions.entries()) {
@@ -295,7 +324,6 @@ export const session = (options: {
   }, 300_000);
   
   return async (req: PrinceRequest, next: Next) => {
-    // Parse session ID from cookie (optimized)
     const cookies = req.headers.get("cookie");
     let sessionId: string | undefined;
     
@@ -304,7 +332,6 @@ export const session = (options: {
       sessionId = match?.[1];
     }
     
-    // Load or create session
     if (sessionId && sessions.has(sessionId)) {
       req.session = sessions.get(sessionId);
     } else {
@@ -312,22 +339,30 @@ export const session = (options: {
       req.session = { _expires: Date.now() + maxAge * 1000 };
     }
     
+    // Track if session was destroyed
+    let sessionDestroyed = false;
+    
     req.session.destroy = () => {
-      if (sessionId) sessions.delete(sessionId);
+      if (sessionId) {
+        sessions.delete(sessionId);
+        sessionDestroyed = true;
+      }
     };
     
     const response = await next();
     if (!response) return response;
     
-    // Save session
-    req.session._expires = Date.now() + maxAge * 1000;
-    sessions.set(sessionId, req.session);
-    
-    // Set cookie
     const headers = new Headers(response.headers);
-    headers.append("Set-Cookie", 
-      `${cookieName}=${sessionId}; Max-Age=${maxAge}; HttpOnly; SameSite=Lax; Path=/`
-    );
+    
+    // Only save session if it wasn't destroyed
+    if (!sessionDestroyed) {
+      req.session._expires = Date.now() + maxAge * 1000;
+      sessions.set(sessionId, req.session);
+      
+      headers.append("Set-Cookie", 
+        `${cookieName}=${sessionId}; Max-Age=${maxAge}; HttpOnly; SameSite=Lax; Path=/`
+      );
+    }
     
     return new Response(response.body, {
       status: response.status,

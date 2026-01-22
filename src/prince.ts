@@ -416,7 +416,8 @@ export class Prince {
     Object.defineProperty(req, 'params', { value: params, writable: true, configurable: true });
     Object.defineProperty(req, 'query', { value: query, writable: true, configurable: true });
 
-    if (["POST", "PUT", "PATCH"].includes(req.method)) {
+    // Only parse body if it hasn't been parsed by middleware already
+    if (["POST", "PUT", "PATCH"].includes(req.method) && !req.parsedBody) {
       const parsed = await this.parseBody(req);
       if (parsed) {
         if (typeof parsed === "object" && "files" in parsed && "fields" in parsed) {

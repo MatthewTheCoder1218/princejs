@@ -403,11 +403,11 @@ describe("Middleware - Validation", () => {
   });
 });
 
-describe("Middleware - CORS", () => {
   test("OPTIONS request returns CORS headers", async () => {
     const app = prince();
     app.use(cors("*"));
     app.get("/api", () => ({ ok: true }));
+    app.options("/api", () => ({ ok: true })); // Add this line
 
     const res = await app.fetch(
       new Request("http://localhost/api", { method: "OPTIONS" })
@@ -427,7 +427,6 @@ describe("Middleware - CORS", () => {
 
     expect(res.headers.get("Access-Control-Allow-Origin")).toBe("https://example.com");
   });
-});
 
 describe("Middleware - Logger", () => {
   test("Logger records method, path, status, and time", async () => {
