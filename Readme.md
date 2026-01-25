@@ -162,8 +162,6 @@ app.ws("/chat", {
   message: (ws, msg) => ws.send(`Echo: ${msg}`)
 });
 
-app.get("/route-level" )
-
 
 app.get("/protected", auth(), (req) => ({ user: req.user }));
 app.get("/api", apiKey({ keys: ["key_123"] }), handler);
