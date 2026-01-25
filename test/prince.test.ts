@@ -1,5 +1,5 @@
 // test/prince.test.ts
-import { describe, test, expect, beforeEach, afterEach, jest } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, jest, it, spyOn } from "bun:test";
 import { prince } from "../src/prince";
 import { jwt, signJWT, rateLimit, validate, cors, logger, auth, apiKey, compress, session } from "../src/middleware";
 import { cache, email, upload, sse } from "../src/helpers";
@@ -428,23 +428,129 @@ describe("Middleware - Validation", () => {
     expect(res.headers.get("Access-Control-Allow-Origin")).toBe("https://example.com");
   });
 
-describe("Middleware - Logger", () => {
-  test("Logger records method, path, status, and time", async () => {
-    const app = prince();
+describe("Logger middleware", () => {
+  it("logs request data", async () => {
+    const app = prince(true);
+
+    const consoleSpy = spyOn(console, "log");
+
     app.use(logger());
-    app.get("/log-me", () => new Response("ok"));
 
-    const consoleLogSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    app.get("/test", () => {
+      return { ok: true };
+    });
 
-    await app.fetch(new Request("http://localhost/log-me", { method: "GET" }));
-    
-    const logCall = consoleLogSpy.mock.calls.find(call => call[0].startsWith('GET /log-me'));
-    
-    expect(logCall).toBeDefined();
-    expect(logCall![0]).toMatch(/^GET \/log-me 200 \d+ms$/);
+    const res = await app.fetch(
+      new Request("http://localhost/test", { method: "GET" })
+    );
 
-    consoleLogSpy.mockRestore();
+    expect(res.status).toBe(200);
+    expect(consoleSpy).toHaveBeenCalled();
+
+    const logged = consoleSpy.mock.calls[0][0];
+    expect(logged.method).toBe("GET");
+    expect(logged.path).toBe("/test");
+    expect(logged.status).toBe(200);
+
+    consoleSpy.mockRestore();
   });
+
+  it("does not log when disabled", async () => {
+    const app = prince(true);
+
+    const consoleSpy = spyOn(console, "log");
+
+    app.use(logger({ enabled: false }));
+
+    app.get("/silent", () => "ok");
+
+    await app.fetch(
+      new Request("http://localhost/silent", { method: "GET" })
+    );
+
+    expect(consoleSpy).not.toHaveBeenCalled();
+    consoleSpy.mockRestore();
+  });
+
+  it("uses custom formatter when provided", async () => {
+    const app = prince(true);
+    const customSpy = spyOn(console, "log");
+
+    app.use(
+      logger({
+        formatter: ({ req, res, duration }) => {
+          console.log(
+            `CUSTOM ${req.method} ${new URL(req.url).pathname} ${res?.status} ${duration}ms`
+          );
+        }
+      })
+    );
+
+    app.get("/custom", () => "ok");
+
+    await app.fetch(
+      new Request("http://localhost/custom", { method: "GET" })
+    );
+
+    expect(customSpy).toHaveBeenCalled();
+    expect(customSpy.mock.calls[0][0]).toContain("CUSTOM");
+
+    customSpy.mockRestore();
+  });
+
+  describe("Logger middleware – errorsOnly", () => {
+  it("does not log successful requests", async () => {
+    const app = prince(true);
+    const spy = spyOn(console, "log");
+
+    app.use(logger({ errorsOnly: true }));
+
+    app.get("/ok", () => ({ ok: true }));
+
+    await app.fetch(
+      new Request("http://localhost/ok", { method: "GET" })
+    );
+
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it("logs 4xx and 5xx responses", async () => {
+    const app = prince(true);
+    const spy = spyOn(console, "log");
+
+    app.use(logger({ errorsOnly: true }));
+
+    app.get("/bad", () => {
+      return new Response("Bad", { status: 400 });
+    });
+
+    await app.fetch(
+      new Request("http://localhost/bad", { method: "GET" })
+    );
+
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it("logs thrown errors", async () => {
+    const app = prince(true);
+    const errorSpy = spyOn(console, "error");
+
+    app.use(logger({ errorsOnly: true }));
+
+    app.get("/crash", () => {
+      throw new Error("Boom");
+    });
+
+    await app.fetch(
+      new Request("http://localhost/crash", { method: "GET" })
+    ).catch(() => {});
+
+    expect(errorSpy).toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+});
 });
 
 // ==========================================

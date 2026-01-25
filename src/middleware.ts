@@ -7,6 +7,83 @@ import { jwtVerify, SignJWT } from "jose";
 type Next = () => Promise<Response | undefined>;
 type HandlerReturn = Response | { [key: string]: any } | undefined;
 
+export interface LoggerOptions {
+  enabled?: boolean;
+  errorsOnly?: boolean;      // 👈 NEW
+  logHeaders?: boolean;
+  logBody?: boolean;
+  formatter?: (data: {
+    req: PrinceRequest;
+    res?: Response;
+    duration: number;
+    error?: any;
+  }) => void;
+}
+
+export const logger = (options: LoggerOptions = {}) => {
+  const {
+    enabled = true,
+    errorsOnly = false,
+    logHeaders = false,
+    logBody = false,
+    formatter
+  } = options;
+
+  return async (req: PrinceRequest, next: Next) => {
+    if (!enabled) return next();
+
+    const start = Date.now();
+
+    try {
+      const res = await next();
+      const duration = Date.now() - start;
+
+      // 👇 Skip logging unless it's an error
+      if (errorsOnly && res.status < 400) {
+        return res;
+      }
+
+      if (formatter) {
+        formatter({ req, res, duration });
+        return res;
+      }
+
+      const log: any = {
+        method: req.method,
+        path: new URL(req.url).pathname,
+        status: res.status,
+        duration: `${duration}ms`
+      };
+
+      if (logHeaders) {
+        log.headers = Object.fromEntries(req.headers.entries());
+      }
+
+      if (logBody && req.body) {
+        log.body = req.body;
+      }
+
+      console.log(log);
+      return res;
+    } catch (error) {
+      const duration = Date.now() - start;
+
+      if (formatter) {
+        formatter({ req, duration, error });
+      } else {
+        console.error({
+          method: req.method,
+          path: new URL(req.url).pathname,
+          error: String(error),
+          duration: `${duration}ms`
+        });
+      }
+
+      throw error;
+    }
+  };
+};
+
 // === CORS ===
 export const cors = (origin: string = '*') => {
   return async (req: any, next: Function) => {
@@ -39,16 +116,6 @@ export const cors = (origin: string = '*') => {
     }
     
     return response;
-  };
-};
-
-// === LOGGER ===
-export const logger = () => {
-  return async (req: PrinceRequest, next: Next) => {
-    const start = Date.now();
-    const res = await next();
-    console.log(`${req.method} ${new URL(req.url).pathname} ${res?.status} ${Date.now() - start}ms`);
-    return res;
   };
 };
 
