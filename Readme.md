@@ -122,26 +122,25 @@ app.use(jwt(key));
 app.use(session({ secret: "key" }));
 app.use(compress());
 
-const Page = () => (
-  Html({
-    children: [
-      Head({
-        children: [
-          "Test Page"
-        ]
-      }),
-      Body({
-        children: [
-          H1({
-            children: "Hello World"
-          }),
-          P({
-            children: "This is a test"
-          })
-        ]
-      })
-    ]
-  })
+const Page = () => Html(
+  Head("Test Page"),
+  Body(
+    H1("Hello World"),
+    P("This is a test")
+  )
+);
+
+// With props (optional)
+const Card = (props: any) => Div(
+  { className: "card", style: "padding: 1rem;" },
+  H1(props.title),
+  P(props.content)
+);
+
+// Without props
+const Simple = () => Div(
+  H1("No Props Needed"),
+  P("Just pure content")
 );
 
 const requireAuth = async (req: any, next: any) => {
