@@ -12,7 +12,6 @@
 ---
 
 ## 🚀 Quick Start
-s
 ```bash
 bun create princejs my-app
 cd my-app
