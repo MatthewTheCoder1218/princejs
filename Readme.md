@@ -83,6 +83,48 @@ app
 
 ---
 
+## Deploy (Vercel, Workers, Deno)
+
+Official adapters let you run the same Prince app on Vercel Edge, Cloudflare Workers, and Deno Deploy.
+
+**Vercel (Edge)** — `api/[[...route]].ts`:
+
+```ts
+import { prince } from "princejs";
+import { toVercel } from "princejs/vercel";
+
+const app = prince();
+app.get("/", () => ({ message: "Hello from Vercel!" }));
+
+export default toVercel(app);
+```
+
+**Cloudflare Workers** — `src/index.ts`:
+
+```ts
+import { prince } from "princejs";
+import { toWorkers } from "princejs/cloudflare";
+
+const app = prince();
+app.get("/", () => ({ message: "Hello from Workers!" }));
+
+export default toWorkers(app);
+```
+
+**Deno Deploy** — `main.ts`:
+
+```ts
+import { prince } from "princejs";
+import { toDeno } from "princejs/deno";
+
+const app = prince();
+app.get("/", () => ({ message: "Hello from Deno!" }));
+
+Deno.serve(toDeno(app));
+```
+
+---
+
 ## Performance With Oha (oha -c 100 -z 30s)
 
 | Framework | Req/s          | Total  |

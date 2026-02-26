@@ -5,9 +5,12 @@ import { jwt, signJWT, rateLimit, validate, cors, logger, auth, apiKey, compress
 import { cache, email, upload, sse } from "../src/helpers";
 import { openapi } from "../src/scheduler";
 import { db } from "../src/db";
-import { z } from "zod";
 import { Html, Head, Body, H1, P, render, Div } from '../src/jsx';
 import { unlink } from "fs/promises";
+import { toVercel } from "../src/adapters/vercel";
+import { toWorkers } from "../src/adapters/cloudflare";
+import { toDeno } from "../src/adapters/deno";
+import { z } from "zod";
 
 // ==========================================
 // ROUTER TESTS (Existing)
@@ -1588,6 +1591,139 @@ describe("Integration - Full Stack", () => {
     // 4th should be rate limited
     const blocked = await app.fetch(new Request("http://localhost/api"));
     expect(blocked.status).toBe(429);
+  });
+});
+
+// ==========================================
+// DEPLOY ADAPTERS (Vercel, Workers, Deno)
+// ==========================================
+
+describe("Deploy Adapters", () => {
+  test("toVercel: handler forwards request to app and returns response", async () => {
+    const app = prince();
+    app.get("/", () => ({ message: "Hello from Vercel!" }));
+    app.get("/api/hello", (req) => ({ query: req.query?.get("name") ?? "world" }));
+
+    const handler = toVercel(app);
+
+    const res1 = await handler(new Request("http://localhost/"));
+    expect(res1.status).toBe(200);
+    const data1 = await res1.json();
+    expect(data1.message).toBe("Hello from Vercel!");
+
+    const res2 = await handler(new Request("http://localhost/api/hello?name=adapter"));
+    expect(res2.status).toBe(200);
+    const data2 = await res2.json();
+    expect(data2.query).toBe("adapter");
+  });
+
+  test("toVercel: 404 and 405 behave like direct app.fetch", async () => {
+    const app = prince();
+    app.get("/only-get", () => ({ ok: true }));
+
+    const handler = toVercel(app);
+
+    const notFound = await handler(new Request("http://localhost/unknown"));
+    expect(notFound.status).toBe(404);
+    const notFoundData = await notFound.json();
+    expect(notFoundData.error).toBe("Not Found");
+
+    const methodNotAllowed = await handler(new Request("http://localhost/only-get", { method: "POST" }));
+    expect(methodNotAllowed.status).toBe(405);
+  });
+
+  test("toWorkers: fetch handler forwards request to app and returns response", async () => {
+    const app = prince();
+    app.get("/", () => ({ message: "Hello from Workers!" }));
+    app.get("/users/:id", (req) => ({ userId: req.params?.id }));
+
+    const worker = toWorkers(app);
+    const mockCtx = {
+      waitUntil: (_p: Promise<unknown>) => {},
+      passThroughOnException: () => {},
+    };
+
+    const res1 = await worker.fetch(new Request("http://localhost/"), {}, mockCtx);
+    expect(res1.status).toBe(200);
+    const data1 = await res1.json();
+    expect(data1.message).toBe("Hello from Workers!");
+
+    const res2 = await worker.fetch(new Request("http://localhost/users/42"), {}, mockCtx);
+    expect(res2.status).toBe(200);
+    const data2 = await res2.json();
+    expect(data2.userId).toBe("42");
+  });
+
+  test("toWorkers: 404 behaves like direct app.fetch", async () => {
+    const app = prince();
+    const worker = toWorkers(app);
+    const mockCtx = { waitUntil: (_p: Promise<unknown>) => {}, passThroughOnException: () => {} };
+
+    const res = await worker.fetch(new Request("http://localhost/missing"), {}, mockCtx);
+    expect(res.status).toBe(404);
+    const data = await res.json();
+    expect(data.error).toBe("Not Found");
+  });
+
+  test("toDeno: handler forwards request to app and returns response", async () => {
+    const app = prince();
+    app.get("/", () => ({ message: "Hello from Deno!" }));
+    app.post("/echo", (req) => ({ body: req.parsedBody }));
+
+    const handler = toDeno(app);
+
+    const res1 = await handler(new Request("http://localhost/"));
+    expect(res1.status).toBe(200);
+    const data1 = await res1.json();
+    expect(data1.message).toBe("Hello from Deno!");
+
+    const res2 = await handler(
+      new Request("http://localhost/echo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ foo: "bar" }),
+      })
+    );
+    expect(res2.status).toBe(200);
+    const data2 = await res2.json();
+    expect(data2.body.foo).toBe("bar");
+  });
+
+  test("toDeno: 404 behaves like direct app.fetch", async () => {
+    const app = prince();
+    const handler = toDeno(app);
+
+    const res = await handler(new Request("http://localhost/nope"));
+    expect(res.status).toBe(404);
+    const data = await res.json();
+    expect(data.error).toBe("Not Found");
+  });
+
+  test("all adapters return identical response for same app and request", async () => {
+    const app = prince();
+    app.get("/ping", () => ({ pong: true }));
+
+    const req = new Request("http://localhost/ping");
+    const direct = await app.fetch(req);
+    const vercelRes = await toVercel(app)(req.clone());
+    const workersRes = await toWorkers(app).fetch(req.clone(), {}, { waitUntil: () => {}, passThroughOnException: () => {} });
+    const denoRes = await toDeno(app)(req.clone());
+
+    const getBody = (r: Response) => r.status === 200 ? r.json() : null;
+    expect(direct.status).toBe(200);
+    expect(vercelRes.status).toBe(200);
+    expect(workersRes.status).toBe(200);
+    expect(denoRes.status).toBe(200);
+
+    const directData = await getBody(direct);
+    const vercelData = await getBody(vercelRes);
+    const workersData = await getBody(workersRes);
+    const denoData = await getBody(denoRes);
+
+    expect(vercelData).toEqual(directData);
+    expect(workersData).toEqual(directData);
+    expect(denoData).toEqual(directData);
+    expect(directData.pong).toBe(true);
   });
 });
 
