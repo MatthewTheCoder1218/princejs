@@ -24,38 +24,56 @@ export const jsxs = jsx;
 export const jsxDEV = jsx;
 export const Fragment = (props: JSXProps) => props.children;
 
-// Helper components for common patterns
-// In your JSX implementation
-export const Html = (props: any) => {
-  return `<html>${renderChildren(props.children)}</html>`;
+// Helper components for common patterns - simplified API
+export const Html = (...children: any[]) => {
+  return `<html>${renderChildren(children)}</html>`;
 };
 
-export const Head = (props: any) => {
-  return `<head>${renderChildren(props.children)}</head>`;
+export const Head = (...children: any[]) => {
+  return `<head>${renderChildren(children)}</head>`;
 };
 
-export const Body = (props: any) => {
-  return `<body>${renderChildren(props.children)}</body>`;
+export const Body = (...children: any[]) => {
+  return `<body>${renderChildren(children)}</body>`;
 };
 
-export const H1 = (props: any) => {
-  return `<h1>${renderChildren(props.children)}</h1>`;
+export const H1 = (...children: any[]) => {
+  return `<h1>${renderChildren(children)}</h1>`;
 };
 
-export const P = (props: any) => {
-  return `<p>${renderChildren(props.children)}</p>`;
+export const P = (...children: any[]) => {
+  return `<p>${renderChildren(children)}</p>`;
 };
 
-export const Div = (props: any) => {
-  const attrs = Object.keys(props)
-    .filter(key => key !== 'children')
-    .map(key => {
-      if (key === 'className') return `class="${props[key]}"`;
-      return `${key}="${props[key]}"`;
-    })
-    .join(' ');
+export const Div = (...args: any[]) => {
+  let options: any = null;
+  let children: any[] = args;
   
-  return `<div ${attrs}>${renderChildren(props.children)}</div>`;
+  // If first arg is a plain object, treat it as options
+  if (args.length > 0 && isPlainObject(args[0])) {
+    options = args[0];
+    children = args.slice(1);
+  }
+  
+  const attrs = options
+    ? Object.keys(options)
+        .map(key => {
+          if (key === 'className') return `class="${options[key]}"`;
+          return `${key}="${options[key]}"`;
+        })
+        .join(' ')
+    : '';
+  
+  return `<div${attrs ? ' ' + attrs : ''}>${renderChildren(children)}</div>`;
+};
+
+const isPlainObject = (obj: any): boolean => {
+  return obj !== null && 
+         typeof obj === 'object' && 
+         !Array.isArray(obj) && 
+         !(obj instanceof Date) && 
+         !(obj instanceof RegExp) &&
+         typeof obj !== 'string';
 };
 
 

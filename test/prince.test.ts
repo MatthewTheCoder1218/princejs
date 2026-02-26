@@ -1355,26 +1355,12 @@ describe("JSX SSR", () => {
   });
 
   test("JSX renders basic HTML", async () => {
-    const Page = () => (
-      Html({
-        children: [
-          Head({
-            children: [
-              "Test Page"
-            ]
-          }),
-          Body({
-            children: [
-              H1({
-                children: "Hello World"
-              }),
-              P({
-                children: "This is a test"
-              })
-            ]
-          })
-        ]
-      })
+    const Page = () => Html(
+      Head("Test Page"),
+      Body(
+        H1("Hello World"),
+        P("This is a test")
+      )
     );
 
     app.get("/jsx", () => render(Page()));
@@ -1389,19 +1375,10 @@ describe("JSX SSR", () => {
   });
 
   test("JSX with props and attributes", async () => {
-    const Card = (props: any) => (
-      Div({
-        className: "card",
-        style: "padding: 1rem;",
-        children: [
-          H1({
-            children: props.title
-          }),
-          P({
-            children: props.content
-          })
-        ]
-      })
+    const Card = (props: any) => Div(
+      { className: "card", style: "padding: 1rem;" },
+      H1(props.title),
+      P(props.content)
     );
 
     app.get("/card", () => render(Card({ 
@@ -1419,28 +1396,16 @@ describe("JSX SSR", () => {
   });
 
   test("JSX component composition", async () => {
-    const Layout = (props: any) => (
-      Html({
-        children: [
-          Head({
-            children: "My Site"
-          }),
-          Body({
-            children: props.children
-          })
-        ]
-      })
+    const Layout = (props: any) => Html(
+      Head("My Site"),
+      Body(...props.children)
     );
 
-    const HomePage = () => (
-      Layout({
-        children: [
-          H1({
-            children: "Welcome Home"
-          })
-        ]
-      })
-    );
+    const HomePage = () => Layout({
+      children: [
+        H1("Welcome Home")
+      ]
+    });
 
     app.get("/home", () => render(HomePage()));
 
@@ -1450,6 +1415,23 @@ describe("JSX SSR", () => {
     expect(html).toContain("<html>");
     expect(html).toContain("<body>");
     expect(html).toContain("Welcome Home");
+  });
+
+  test("JSX without props on Div", async () => {
+    const Card = () => Div(
+      H1("No Props Needed"),
+      P("Just pure content")
+    );
+
+    app.get("/simple", () => render(Card()));
+
+    const res = await app.fetch(new Request("http://localhost/simple"));
+    const html = await res.text();
+
+    expect(html).toContain("<div>");
+    expect(html).toContain("<h1>No Props Needed</h1>");
+    expect(html).toContain("<p>Just pure content</p>");
+    expect(html).toContain("</div>");
   });
 });
 
