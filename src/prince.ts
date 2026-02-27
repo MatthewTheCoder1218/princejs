@@ -1,4 +1,4 @@
-﻿// prince.ts - Complete framework with route-level middleware
+// prince.ts - Complete framework with route-level middleware
 // @ts-nocheck 
 /// <reference types="bun-types" />
 
@@ -44,6 +44,12 @@ interface RadixNode {
   isWildcard?: boolean;
   isCatchAll?: boolean;
 }
+
+// Simple plugin type: receives the app instance and optional options
+export type PrincePlugin<TOptions = any> = (
+  app: Prince,
+  options?: TOptions
+) => void | Promise<void>;
 
 class ResponseBuilder {
   private _status = 200;
@@ -109,6 +115,24 @@ export class Prince {
 
   use(mw: Middleware) {
     this.middlewares.push(mw);
+    return this;
+  }
+
+  /**
+   * Lightweight plugin system: allows sharing bundles of routes/middleware.
+   *
+   * @example
+   * const usersPlugin: PrincePlugin<{ prefix?: string }> = (app, opts) => {
+   *   const base = opts?.prefix ?? "";
+   *   app.get(`${base}/users`, () => [{ id: 1 }]);
+   * };
+   *
+   * app.plugin(usersPlugin, { prefix: "/api" });
+   */
+  plugin<TOptions = any>(plugin: PrincePlugin<TOptions>, options?: TOptions) {
+    // Plugin can synchronously register routes/middleware.
+    // If it returns a Promise, it should handle its own async work internally.
+    void plugin(this, options as TOptions);
     return this;
   }
 

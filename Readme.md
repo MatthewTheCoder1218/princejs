@@ -78,6 +78,33 @@ app
 
 ### Route-level Middleware
 
+### Plugin System
+
+You can share bundles of routes and middleware as plugins.
+
+```ts
+import { prince, type PrincePlugin } from "princejs";
+
+const usersPlugin: PrincePlugin<{ prefix?: string }> = (app, opts) => {
+  const base = opts?.prefix ?? "";
+
+  // plugin-wide middleware
+  app.use((req, next) => {
+    (req as any).fromPlugin = true;
+    return next();
+  });
+
+  // plugin routes
+  app.get(`${base}/users`, (req) => ({
+    ok: true,
+    fromPlugin: (req as any).fromPlugin,
+  }));
+};
+
+const app = prince();
+app.plugin(usersPlugin, { prefix: "/api" });
+```
+
 ### Database (SQLite)
 
 ---

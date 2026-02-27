@@ -1595,6 +1595,56 @@ describe("Integration - Full Stack", () => {
 });
 
 // ==========================================
+// PLUGIN SYSTEM
+// ==========================================
+
+describe("Plugin system", () => {
+  test("plugin can register routes and middleware with options", async () => {
+    const app = prince();
+
+    const usersPlugin = (instance: ReturnType<typeof prince>, opts?: { prefix?: string }) => {
+      const base = opts?.prefix ?? "";
+
+      instance.use((req, next) => {
+        (req as any).fromPlugin = true;
+        return next();
+      });
+
+      instance.get(`${base}/users`, (req) => ({
+        ok: true,
+        fromPlugin: (req as any).fromPlugin,
+      }));
+    };
+
+    app.plugin(usersPlugin, { prefix: "/api" });
+
+    const res = await app.fetch(new Request("http://localhost/api/users"));
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    expect(data.fromPlugin).toBe(true);
+  });
+
+  test("plugin is chainable with other calls", async () => {
+    const app = prince();
+
+    app
+      .plugin((instance) => {
+        instance.get("/plugin", () => ({ via: "plugin" }));
+      })
+      .get("/direct", () => ({ via: "direct" }));
+
+    const res1 = await app.fetch(new Request("http://localhost/plugin"));
+    const data1 = await res1.json();
+    expect(data1.via).toBe("plugin");
+
+    const res2 = await app.fetch(new Request("http://localhost/direct"));
+    const data2 = await res2.json();
+    expect(data2.via).toBe("direct");
+  });
+});
+
+// ==========================================
 // DEPLOY ADAPTERS (Vercel, Workers, Deno)
 // ==========================================
 
