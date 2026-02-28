@@ -53,18 +53,18 @@ app
   })));
 ```
 
-### ✓ Middleware
+### Middleware
 
 * CORS
 * Logger
 * Rate Limiting
 * Static Files
 
-### ✓ Validation (Zod)
+### Validation (Zod)
 
-### ✓ File Uploads
+### File Uploads
 
-### ✓ Response Builder
+### Response Builder
 
 ### WebSocket Support
 
