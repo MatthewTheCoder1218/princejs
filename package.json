@@ -1,6 +1,6 @@
 {
   "name": "princejs",
-  "version": "1.9.1",
+  "version": "1.9.2",
   "description": "An easy and fast backend framework that is among the top three — by a 13yo developer, for developers.",
   "main": "dist/prince.js",
   "types": "dist/prince.d.ts",
@@ -44,6 +44,10 @@
     "./deno": {
       "import": "./dist/adapters/deno.js",
       "types": "./dist/adapters/deno.d.ts"
+    },
+    "./client": {
+      "import": "./dist/client.js",
+      "types": "./dist/client.d.ts"
     }
   },
   "files": [
@@ -52,7 +56,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build:js": "bun build src/prince.ts --outdir dist --target bun && bun build src/middleware.ts --outdir dist --target bun && bun build src/helpers.ts --outdir dist --target bun && bun build src/scheduler.ts --outdir dist --target bun && bun build bin/create.ts --outdir dist --target bun && bun build src/jsx.ts --outdir dist --target bun && bun build src/db.ts --outdir dist --target bun --format esm && bun build src/adapters/vercel.ts --outdir dist/adapters --format esm && bun build src/adapters/cloudflare.ts --outdir dist/adapters --format esm && bun build src/adapters/deno.ts --outdir dist/adapters --format esm",
+    "build:js": "bun build src/prince.ts --outdir dist --target bun && bun build src/middleware.ts --outdir dist --target bun && bun build src/helpers.ts --outdir dist --target bun && bun build src/scheduler.ts --outdir dist --target bun && bun build bin/create.ts --outdir dist --target bun && bun build src/jsx.ts --outdir dist --target bun && bun build src/db.ts --outdir dist --target bun --format esm && bun build src/client.ts --outdir dist --format esm && bun build src/adapters/vercel.ts --outdir dist/adapters --format esm && bun build src/adapters/cloudflare.ts --outdir dist/adapters --format esm && bun build src/adapters/deno.ts --outdir dist/adapters --format esm",
     "build:types": "tsc --emitDeclarationOnly --skipLibCheck",
     "build": "bun run build:js && bun run build:types",
     "prepublishOnly": "bun run build",

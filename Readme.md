@@ -107,6 +107,38 @@ app.plugin(usersPlugin, { prefix: "/api" });
 
 ### Database (SQLite)
 
+### End to End Type-Safety
+
+PrinceJS supports contract-based type safety to sync your frontend and backend seamlessly. By defining an API contract, your client receives full TypeScript autocompletion and type-checking for routes, parameters, and responses.
+
+
+**Define Your Contract**
+
+```ts
+type ApiContract = {
+  "GET /users/:id": { 
+    params: { id: string }; 
+    response: { id: string; name: string }; 
+  };
+  "POST /users": { 
+    body: { name: string }; 
+    response: { id: string; ok: boolean }; 
+  };
+};
+```
+
+**Initialize The Client**
+
+```ts
+import { createClient } from "princejs/client";
+
+const client = createClient<ApiContract>("http://localhost:3000");
+
+// Fully typed request and response
+const user = await client.get("/users/:id", { params: { id: "42" } });
+console.log(user.name); // Typed as string
+```
+
 ---
 
 ## Deploy (Vercel, Workers, Deno)

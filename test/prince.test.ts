@@ -10,6 +10,7 @@ import { unlink } from "fs/promises";
 import { toVercel } from "../src/adapters/vercel";
 import { toWorkers } from "../src/adapters/cloudflare";
 import { toDeno } from "../src/adapters/deno";
+import { createClient, type PrinceApiContract } from "../src/client";
 import { z } from "zod";
 
 // ==========================================
@@ -1641,6 +1642,102 @@ describe("Plugin system", () => {
     const res2 = await app.fetch(new Request("http://localhost/direct"));
     const data2 = await res2.json();
     expect(data2.via).toBe("direct");
+  });
+});
+
+// ==========================================
+// CLIENT - End-to-End Type Safety
+// ==========================================
+
+describe("Client - End-to-End Type Safety", () => {
+  test("createClient: get returns typed response", async () => {
+    const app = prince();
+    app.get("/health", () => ({ ok: true }));
+
+    const server = Bun.serve({
+      port: 0,
+      fetch: app.fetch.bind(app),
+    });
+    const base = `http://localhost:${server.port}`;
+
+    type Contract = {
+      "GET /health": { response: { ok: boolean } };
+    };
+    const client = createClient<Contract>(base);
+
+    const data = await client.get("/health");
+    expect(data).toEqual({ ok: true });
+    expect(data.ok).toBe(true); // type check
+
+    server.stop();
+  });
+
+  test("createClient: get with params", async () => {
+    const app = prince();
+    app.get("/users/:id", (req) => ({ id: req.params!.id, name: `User${req.params!.id}` }));
+
+    const server = Bun.serve({
+      port: 0,
+      fetch: app.fetch.bind(app),
+    });
+    const base = `http://localhost:${server.port}`;
+
+    type Contract = {
+      "GET /users/:id": { params: { id: string }; response: { id: string; name: string } };
+    };
+    const client = createClient<Contract>(base);
+
+    const data = await client.get("/users/:id", { params: { id: "42" } });
+    expect(data.id).toBe("42");
+    expect(data.name).toBe("User42");
+
+    server.stop();
+  });
+
+  test("createClient: post with body", async () => {
+    const app = prince();
+    app.post("/users", (req) => {
+      const body = req.parsedBody as { name: string };
+      return { id: "1", name: body.name };
+    });
+
+    const server = Bun.serve({
+      port: 0,
+      fetch: app.fetch.bind(app),
+    });
+    const base = `http://localhost:${server.port}`;
+
+    type Contract = {
+      "POST /users": { body: { name: string }; response: { id: string; name: string } };
+    };
+    const client = createClient<Contract>(base);
+
+    const data = await client.post("/users", { body: { name: "Alice" } });
+    expect(data.id).toBe("1");
+    expect(data.name).toBe("Alice");
+
+    server.stop();
+  });
+
+  test("createClient: delete", async () => {
+    const app = prince();
+    app.delete("/items/:id", () => ({ deleted: true }));
+
+    const server = Bun.serve({
+      port: 0,
+      fetch: app.fetch.bind(app),
+    });
+    const base = `http://localhost:${server.port}`;
+
+    type Contract = {
+      "DELETE /items/:id": { params: { id: string }; response: { deleted: boolean } };
+    };
+    const client = createClient<Contract>(base);
+
+    const data = await client.delete("/items/:id", { params: { id: "x" } });
+    expect(data.deleted).toBe(true);
+
+    server.stop();
   });
 });
 
