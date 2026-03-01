@@ -105,6 +105,55 @@ const app = prince();
 app.plugin(usersPlugin, { prefix: "/api" });
 ```
 
+### OpenAPI + Scalar Docs
+
+Auto-generate an OpenAPI 3.0 spec and serve a beautiful [Scalar](https://scalar.com) API reference UI — all from a single `app.openapi()` call. Routes, validation, and docs stay in sync automatically.
+
+```ts
+import { prince } from "princejs";
+import { z } from "zod";
+
+const app = prince();
+
+const api = app.openapi({ title: "My API", version: "1.0.0" }, "/docs", { theme: "moon" });
+
+api.route("GET", "/users/:id", {
+  summary: "Get user by ID",
+  tags: ["users"],
+  schema: {
+    response: z.object({ id: z.string(), name: z.string() }),
+  },
+}, (req) => ({ id: req.params!.id, name: "Alice" }));
+
+api.route("POST", "/users", {
+  summary: "Create user",
+  tags: ["users"],
+  schema: {
+    body:     z.object({ name: z.string().min(2), email: z.string().email() }),
+    response: z.object({ id: z.string(), name: z.string(), email: z.string() }),
+  },
+}, (req) => ({ id: crypto.randomUUID(), ...req.parsedBody }));
+
+app.listen(3000);
+// → GET /docs       Scalar UI
+// → GET /docs.json  Raw OpenAPI JSON
+```
+
+**`api.route()` does three things at once:**
+- Registers the route on PrinceJS (same as `app.get()` / `app.post()`)
+- Auto-wires `validate(schema.body)` middleware — no separate import needed
+- Writes the full OpenAPI spec entry including path params, request body, query params, and response schema
+
+| `schema` key | Runtime effect | Scalar docs |
+|---|---|---|
+| `body` | ✅ Validates & strips via `validate()` | ✅ requestBody model |
+| `query` | ❌ docs only | ✅ typed query params |
+| `response` | ❌ docs only | ✅ 200 response model |
+
+Routes registered with `app.get()` / `app.post()` directly never appear in the docs — useful for internal health checks, webhooks, and admin endpoints.
+
+**Available themes:** `default` · `moon` · `purple` · `solarized` · `bluePlanet` · `deepSpace` · `saturn` · `kepler` · `mars`
+
 ### Database (SQLite)
 
 ### End to End Type-Safety
@@ -203,7 +252,7 @@ import { prince } from "princejs";
 import { cors, logger, rateLimit, auth, apiKey, jwt, session, compress, serve } from "princejs/middleware";
 import { validate } from "princejs/validation";
 import { cache, upload, sse } from "princejs/helpers";
-import { cron } from "princejs/scheduler";
+import { cron, openapi } from "princejs/scheduler";
 import { Html, Head, Body, H1, P, render } from "princejs/jsx"
 import { db } from "princejs/db";
 import { z } from "zod";
@@ -284,6 +333,17 @@ app.get("/count", (req) => ({ visits: req.session.visits++ || 1 }));
 app.get("/users", () => users.query("SELECT * FROM users"));
 
 cron("*/1 * * * *", () => console.log("PrinceJS heartbeat"));
+
+// OpenAPI + Scalar
+const api = app.openapi({ title: "PrinceJS App", version: "1.0.0" }, "/docs");
+api.route("GET", "/items", {
+  summary: "List items",
+  tags: ["items"],
+  schema: {
+    query:    z.object({ q: z.string().optional() }),
+    response: z.array(z.object({ id: z.string(), name: z.string() })),
+  },
+}, () => [{ id: "1", name: "Widget" }]);
 
 app.listen(3000);
 ```
