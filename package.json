@@ -1,6 +1,6 @@
 {
   "name": "princejs",
-  "version": "1.9.3",
+  "version": "1.9.4",
   "description": "An easy and fast backend framework that is among the top three — by a 13yo developer, for developers.",
   "main": "dist/prince.js",
   "types": "dist/prince.d.ts",
