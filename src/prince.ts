@@ -1,6 +1,9 @@
 // prince.ts - Complete framework with route-level middleware
 // @ts-nocheck 
 /// <reference types="bun-types" />
+import type { OpenAPISpec, OpenAPIBuilder, ScalarOptions } from "./scheduler";
+import { openapi as buildOpenAPI } from "./scheduler";
+import { z } from "zod";
 
 type Next = () => Promise<Response>;
 type Middleware = (req: PrinceRequest, next: Next) => Promise<Response | undefined> | Response | undefined;
@@ -95,12 +98,211 @@ class ResponseBuilder {
   }
 }
 
+// ─── Zod → JSON Schema converter ────────────────────────────────────────────
+// Lightweight recursive converter — covers the common cases without pulling in
+// the full zod-to-json-schema package.
+
+function zodToJsonSchema(schema: z.ZodTypeAny): Record<string, unknown> {
+  const d = (schema as any)._def;
+  const typeName: string = d?.typeName ?? d?.type ?? "";
+
+  // ── String ───────────────────────────────────────────────────────────────
+  if (schema instanceof z.ZodString || typeName === "ZodString") {
+    const s: any = { type: "string" };
+    const checks: any[] = d.checks ?? [];
+    for (const c of checks) {
+      // Zod v3: c.kind + c.value
+      if (c.kind === "min")   s.minLength = c.value;
+      if (c.kind === "max")   s.maxLength = c.value;
+      if (c.kind === "email") s.format = "email";
+      if (c.kind === "url")   s.format = "uri";
+      if (c.kind === "uuid")  s.format = "uuid";
+      if (c.kind === "regex") s.pattern = c.regex?.source ?? c.pattern;
+      // Zod v4: all data is inside c._zod.def
+      const def = c._zod?.def ?? {};
+      if (def.check === "min_length") s.minLength = def.minimum;
+      if (def.check === "max_length") s.maxLength = def.maximum;
+      if (def.check === "string_format") {
+        if (def.format === "email") s.format = "email";
+        if (def.format === "url")   s.format = "uri";
+        if (def.format === "uuid")  s.format = "uuid";
+        if (def.format === "regex") s.pattern = def.pattern;
+      }
+    }
+    return s;
+  }
+
+  // ── Number ───────────────────────────────────────────────────────────────
+  if (schema instanceof z.ZodNumber || typeName === "ZodNumber") {
+    const s: any = { type: "number" };
+    const checks: any[] = d.checks ?? [];
+    for (const c of checks) {
+      // Zod v3: c.kind + c.value
+      if (c.kind === "min") s.minimum = c.value ?? c.minimum;
+      if (c.kind === "max") s.maximum = c.value ?? c.maximum;
+      if (c.kind === "int") s.type = "integer";
+      if (c.kind === "multipleOf") s.multipleOf = c.value;
+      // Zod v4: all data is inside c._zod.def
+      const def = c._zod?.def ?? {};
+      if (def.check === "greater_than" || def.check === "greater_than_or_equal") s.minimum = def.value;
+      if (def.check === "less_than"    || def.check === "less_than_or_equal")    s.maximum = def.value;
+      if (def.check === "number_format" && (def.format === "safeint" || def.format === "int32" || def.format === "int64")) s.type = "integer";
+      if (def.check === "multiple_of") s.multipleOf = def.value;
+    }
+    return s;
+  }
+
+  // ── Boolean ──────────────────────────────────────────────────────────────
+  if (schema instanceof z.ZodBoolean || typeName === "ZodBoolean") return { type: "boolean" };
+  if (schema instanceof z.ZodNull    || typeName === "ZodNull")    return { type: "null" };
+
+  // ── Literal ──────────────────────────────────────────────────────────────
+  if (schema instanceof z.ZodLiteral || typeName === "ZodLiteral") {
+    const val = d.value ?? d.values?.[0];
+    return { enum: [val] };
+  }
+
+  // ── Enum ─────────────────────────────────────────────────────────────────
+  if (schema instanceof z.ZodEnum || typeName === "ZodEnum") {
+    // v3: _def.values = ["a","b"]  |  v4: _def.entries = {a:"a",b:"b"} or _def.options
+    const vals = d.values
+      ?? (d.entries ? Object.values(d.entries) : undefined)
+      ?? d.options
+      ?? [];
+    return { type: "string", enum: vals };
+  }
+
+  // ── Array ─────────────────────────────────────────────────────────────────
+  if (schema instanceof z.ZodArray || typeName === "ZodArray") {
+    const items = d.element ?? d.type ?? d.items;
+    return { type: "array", items: items ? zodToJsonSchema(items) : {} };
+  }
+
+  // ── Optional / Nullable ──────────────────────────────────────────────────
+  if (schema instanceof z.ZodOptional || typeName === "ZodOptional" ||
+      schema instanceof z.ZodNullable || typeName === "ZodNullable") {
+    return zodToJsonSchema(d.innerType ?? d.type);
+  }
+
+  // ── Default ──────────────────────────────────────────────────────────────
+  if (schema instanceof z.ZodDefault || typeName === "ZodDefault") {
+    const inner = zodToJsonSchema(d.innerType ?? d.type);
+    const dv = d.defaultValue ?? d.default;
+    return { ...inner, default: typeof dv === "function" ? dv() : dv };
+  }
+
+  // ── Object ───────────────────────────────────────────────────────────────
+  if (schema instanceof z.ZodObject || typeName === "ZodObject") {
+    // v3: shape is a plain object  |  v4: shape may also be a plain object
+    const shape: Record<string, z.ZodTypeAny> = d.shape ?? {};
+    const properties: Record<string, unknown> = {};
+    const required: string[] = [];
+    for (const [key, val] of Object.entries(shape)) {
+      const v = val as z.ZodTypeAny;
+      const vd = (v as any)._def;
+      const vType = vd?.typeName ?? vd?.type ?? "";
+      properties[key] = zodToJsonSchema(v);
+      const isOptional = v instanceof z.ZodOptional || vType === "ZodOptional"
+        || v instanceof z.ZodDefault  || vType === "ZodDefault";
+      if (!isOptional) required.push(key);
+    }
+    return { type: "object", properties, ...(required.length ? { required } : {}) };
+  }
+
+  // ── Union ─────────────────────────────────────────────────────────────────
+  if (schema instanceof z.ZodUnion || typeName === "ZodUnion") {
+    return { oneOf: (d.options ?? []).map(zodToJsonSchema) };
+  }
+
+  // ── Intersection ──────────────────────────────────────────────────────────
+  if (schema instanceof z.ZodIntersection || typeName === "ZodIntersection") {
+    return { allOf: [d.left, d.right].map(zodToJsonSchema) };
+  }
+
+  // ── Record ────────────────────────────────────────────────────────────────
+  if (schema instanceof z.ZodRecord || typeName === "ZodRecord") {
+    // v3: _def.valueType                        (two-arg: key schema + value schema)
+    // v4: _def.keyType only for single-arg      z.record(ValueSchema) → keyType IS the value schema
+    //     _def.keyType + _def.valueType for      z.record(KeySchema, ValueSchema)
+    const valueSchema = d.valueType ?? d.valueSchema ?? d.element
+      // Zod v4 single-arg: the only schema passed becomes keyType
+      ?? (d.keyType && !d.valueType ? d.keyType : undefined);
+    return { type: "object", additionalProperties: valueSchema ? zodToJsonSchema(valueSchema) : {} };
+  }
+
+  // Fallback
+  return {};
+}
+
+// Converts a z.ZodObject into OpenAPI query parameter entries
+function zodObjectToQueryParams(schema: z.ZodObject<any>): Record<string, unknown>[] {
+  const d = (schema as any)._def;
+  const shape: Record<string, z.ZodTypeAny> = d.shape ?? {};
+  return Object.entries(shape).map(([name, val]) => {
+    const v = val as z.ZodTypeAny;
+    const vTypeName = (v as any)._def?.typeName ?? (v as any)._def?.type ?? "";
+    const isOptional = v instanceof z.ZodOptional || vTypeName === "ZodOptional"
+      || v instanceof z.ZodDefault || vTypeName === "ZodDefault";
+    return {
+      name,
+      in: "query",
+      required: !isOptional,
+      schema: zodToJsonSchema(v),
+    };
+  });
+}
+
+// Merges schema.response into responses, generating a 200 entry if not present.
+// Manual responses always win — spread base AFTER the generated 200.
+function buildResponses(
+  responseSchema?: z.ZodTypeAny,
+  existingResponses?: Record<string, unknown>
+): Record<string, unknown> {
+  const base = existingResponses ?? {};
+  if (!responseSchema) return Object.keys(base).length ? base : { 200: { description: "OK" } };
+  return {
+    200: {
+      description: "OK",
+      content: {
+        "application/json": {
+          schema: zodToJsonSchema(responseSchema),
+        },
+      },
+    },
+    ...base,
+  };
+}
+
+// Import validate from middleware — used to auto-wire body validation
+import { validate } from "./middleware";
+
+// ─── RouteOperation type ─────────────────────────────────────────────────────
+
+export interface RouteSchema {
+  /** Zod schema for the request body — auto-wires validate() middleware */
+  body?: z.ZodTypeAny;
+  /** Zod schema for query parameters — written into the OpenAPI spec */
+  query?: z.ZodObject<any>;
+  /** Zod schema for the response body — written into the OpenAPI spec */
+  response?: z.ZodTypeAny;
+}
+
+export interface RouteOperation {
+  summary?: string;
+  description?: string;
+  tags?: string[];
+  /** Attach Zod schemas to auto-generate request/response models in Scalar */
+  schema?: RouteSchema;
+  responses?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
 export class Prince {
   private rawRoutes: RouteEntry[] = [];
   private middlewares: Middleware[] = [];
   private errorHandler?: (err: any, req: PrinceRequest) => Response;
   private wsRoutes: Record<string, WebSocketHandler> = {};
-  private openapiData: any = null;
+  private openapiSpec: OpenAPISpec | null = null;
   private router: RadixNode | null = null;
   private staticRoutes: Map<string, RouteHandler> = new Map();
   private staticMiddlewares: Map<string, Middleware[]> = new Map();
@@ -522,6 +724,122 @@ export class Prince {
     }
   }
 
+  /**
+   * Mounts an OpenAPI spec + Scalar UI onto this Prince app.
+   *
+   * Calling this method returns an `OpenAPIBuilder` whose `.route()` method
+   * registers a route on the Prince app **and** writes the matching path entry
+   * into the OpenAPI spec simultaneously — so the two can never drift.
+   *
+   * Two routes are auto-registered:
+   *   GET `docsPath`        → Scalar UI  (e.g. /docs)
+   *   GET `docsPath`.json   → Raw spec   (e.g. /docs.json)
+   *
+   * @example
+   * const app = prince();
+   * const api = app.openapi({ title: "My API", version: "1.0.0" }, "/docs");
+   *
+   * // Registers GET /hello on Prince AND adds it to the OpenAPI spec
+   * api.route("GET", "/hello", {
+   *   summary: "Say hello",
+   *   responses: { 200: { description: "OK" } },
+   * }, (req) => ({ message: "hello" }));
+   *
+   * app.listen(3000);
+   * // → GET /docs      → Scalar UI
+   * // → GET /docs.json → raw OpenAPI JSON
+   */
+  openapi(
+    info: { title: string; version: string },
+    docsPath = "/docs",
+    scalarOptions: ScalarOptions = {}
+  ): OpenAPIBuilder & { route: (method: string, path: string, operation: Record<string, unknown>, ...args: (RouteHandler | Middleware)[]) => OpenAPIBuilder } {
+    const builder = buildOpenAPI(info);
+    this.openapiSpec = builder.spec;
+
+    // Convert Prince path params (:id) to OpenAPI format ({id})
+    const toOpenAPIPath = (p: string) => p.replace(/:([^/]+)/g, "{$1}");
+
+    // Serve Scalar UI
+    this.get(docsPath, (req: PrinceRequest) => {
+      return new Response(
+        renderScalarHTML(builder.spec, scalarOptions),
+        { headers: { "Content-Type": "text/html; charset=utf-8" } }
+      );
+    });
+
+    // Serve raw spec JSON
+    const jsonPath = docsPath.replace(/\/$/, "") + ".json";
+    this.get(jsonPath, (_req: PrinceRequest) =>
+      new Response(JSON.stringify(builder.spec, null, 2), {
+        headers: { "Content-Type": "application/json; charset=utf-8" },
+      })
+    );
+
+    // Augment builder with a schema-aware route() method that syncs both sides
+    const self = this;
+    (builder as any).route = function (
+      method: string,
+      path: string,
+      operation: RouteOperation,
+      ...args: (RouteHandler | Middleware)[]
+    ) {
+      const m = method.toUpperCase();
+      const { schema, responses: manualResponses, ...operationRest } = operation;
+
+      // --- 1. Auto-wire validate() middleware from schema.body ---
+      const middlewares: (RouteHandler | Middleware)[] = [];
+      if (schema?.body) {
+        middlewares.push(validate(schema.body) as Middleware);
+      }
+      middlewares.push(...args);
+      self.add(m, path, middlewares);
+
+      // --- 2. Build OpenAPI spec entry ---
+      const oaPath = toOpenAPIPath(path);
+      if (!builder.spec.paths[oaPath]) builder.spec.paths[oaPath] = {};
+
+      // Path params from :id style segments
+      const pathParams = [...path.matchAll(/:([^/]+)/g)].map(([, name]) => ({
+        name,
+        in: "path",
+        required: true,
+        schema: { type: "string" },
+      }));
+
+      // Query params from schema.query Zod object
+      const queryParams = schema?.query
+        ? zodObjectToQueryParams(schema.query)
+        : [];
+
+      // Request body from schema.body
+      const requestBody = schema?.body
+        ? {
+            required: true,
+            content: {
+              "application/json": {
+                schema: zodToJsonSchema(schema.body),
+              },
+            },
+          }
+        : undefined;
+
+      // Responses — merge schema.response with any manually-defined responses
+      const responses = buildResponses(schema?.response, manualResponses as any);
+
+      (builder.spec.paths[oaPath] as any)[m.toLowerCase()] = {
+        parameters: [...pathParams, ...queryParams],
+        ...(requestBody ? { requestBody } : {}),
+        responses,
+        ...operationRest,
+      };
+
+      return builder;
+    };
+
+    return builder as any;
+  }
+
   listen(port = 3000) {
     const self = this;
     
@@ -568,6 +886,37 @@ export class Prince {
 
     console.log(`🚀 PrinceJS running on http://localhost:${port}`);
   }
+}
+
+// Internal helper — renders Scalar HTML from a spec object.
+// Kept here (not imported) so prince.ts stays self-contained for the UI route.
+function renderScalarHTML(spec: OpenAPISpec, options: ScalarOptions = {}): string {
+  const {
+    pageTitle = (spec.info.title as string) ?? "API Reference",
+    theme = "default",
+    layout = "modern",
+    hideDownloadButton = false,
+    customCss = "",
+  } = options;
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${pageTitle}</title>
+    ${customCss ? `<style>${customCss}</style>` : ""}
+  </head>
+  <body>
+    <script
+      id="api-reference"
+      type="application/json"
+      data-theme="${theme}"
+      data-layout="${layout}"
+      ${hideDownloadButton ? 'data-hide-download-button="true"' : ""}
+    >${JSON.stringify(spec)}</script>
+    <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"></script>
+  </body>
+</html>`;
 }
 
 export const prince = (dev = false) => new Prince(dev);

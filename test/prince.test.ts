@@ -3,7 +3,7 @@ import { describe, test, expect, beforeEach, afterEach, jest, it, spyOn } from "
 import { prince } from "../src/prince";
 import { jwt, signJWT, rateLimit, validate, cors, logger, auth, apiKey, compress, session } from "../src/middleware";
 import { cache, email, upload, sse } from "../src/helpers";
-import { openapi } from "../src/scheduler";
+import { openapi, cron } from "../src/scheduler";
 import { db } from "../src/db";
 import { Html, Head, Body, H1, P, render, Div } from '../src/jsx';
 import { unlink } from "fs/promises";
@@ -1871,6 +1871,887 @@ describe("Deploy Adapters", () => {
     expect(workersData).toEqual(directData);
     expect(denoData).toEqual(directData);
     expect(directData.pong).toBe(true);
+  });
+});
+
+// ==========================================
+// UTILITY - openapi (matches existing prince.test.ts describe name)
+// ==========================================
+
+describe("Utility - openapi", () => {
+  test("openapi utility returns correct base structure", () => {
+    const info = { title: "Test API", version: "1.0.0" };
+    // openapi() now returns a builder — spec lives on .spec
+    const api = openapi(info);
+
+    expect(api.spec.openapi).toBe("3.0.0");
+    expect(api.spec.info).toEqual(info);
+    expect(api.spec.paths).toEqual({});
+  });
+});
+
+// ==========================================
+// SCHEDULER - openapi() builder
+// ==========================================
+
+describe("Scheduler - openapi() builder", () => {
+  test("returns a spec with correct openapi version and info", () => {
+    const api = openapi({ title: "Test API", version: "1.0.0" });
+
+    expect(api.spec.openapi).toBe("3.0.0");
+    expect(api.spec.info.title).toBe("Test API");
+    expect(api.spec.info.version).toBe("1.0.0");
+    expect(api.spec.paths).toEqual({});
+  });
+
+  test("spec object is mutable", () => {
+    const api = openapi({ title: "My API", version: "2.0.0" });
+
+    api.spec.paths["/hello"] = {
+      get: { summary: "Hello", responses: { 200: { description: "OK" } } },
+    };
+
+    expect(api.spec.paths["/hello"]).toBeDefined();
+  });
+
+  test("scalar() returns a handler function", () => {
+    const api = openapi({ title: "My API", version: "1.0.0" });
+    const handler = api.scalar();
+
+    expect(typeof handler).toBe("function");
+  });
+
+  test("scalar() handler writes HTML with Scalar CDN script", async () => {
+    const api = openapi({ title: "My API", version: "1.0.0" });
+
+    let capturedBody = "";
+    let capturedStatus = 0;
+    let capturedHeaders: Record<string, string> = {};
+
+    const fakeRes = {
+      writeHead(status: number, headers: Record<string, string>) {
+        capturedStatus = status;
+        capturedHeaders = headers;
+      },
+      end(body: string) {
+        capturedBody = body;
+      },
+    };
+
+    api.scalar()(null, fakeRes);
+
+    expect(capturedStatus).toBe(200);
+    expect(capturedHeaders["Content-Type"]).toContain("text/html");
+    expect(capturedBody).toContain("@scalar/api-reference");
+    expect(capturedBody).toContain("My API");
+  });
+
+  test("scalar() inlines spec JSON into the HTML page", () => {
+    const api = openapi({ title: "Inline Test", version: "1.0.0" });
+    api.spec.paths["/ping"] = { get: { summary: "Ping" } };
+
+    let html = "";
+    api.scalar()({}, {
+      writeHead: () => {},
+      end: (body: string) => { html = body; },
+    });
+
+    expect(html).toContain('"Inline Test"');
+    expect(html).toContain('"/ping"');
+  });
+
+  test("scalar() respects theme option", () => {
+    const api = openapi({ title: "API", version: "1.0.0" });
+
+    let html = "";
+    api.scalar({ theme: "moon" })({}, {
+      writeHead: () => {},
+      end: (body: string) => { html = body; },
+    });
+
+    expect(html).toContain('data-theme="moon"');
+  });
+
+  test("scalar() respects layout option", () => {
+    const api = openapi({ title: "API", version: "1.0.0" });
+
+    let html = "";
+    api.scalar({ layout: "classic" })({}, {
+      writeHead: () => {},
+      end: (body: string) => { html = body; },
+    });
+
+    expect(html).toContain('data-layout="classic"');
+  });
+
+  test("scalar() respects hideDownloadButton option", () => {
+    const api = openapi({ title: "API", version: "1.0.0" });
+
+    let html = "";
+    api.scalar({ hideDownloadButton: true })({}, {
+      writeHead: () => {},
+      end: (body: string) => { html = body; },
+    });
+
+    expect(html).toContain('data-hide-download-button="true"');
+  });
+
+  test("scalar() respects custom pageTitle option", () => {
+    const api = openapi({ title: "API", version: "1.0.0" });
+
+    let html = "";
+    api.scalar({ pageTitle: "My Custom Docs" })({}, {
+      writeHead: () => {},
+      end: (body: string) => { html = body; },
+    });
+
+    expect(html).toContain("<title>My Custom Docs</title>");
+  });
+
+  test("scalar() injects customCss into the page", () => {
+    const api = openapi({ title: "API", version: "1.0.0" });
+
+    let html = "";
+    api.scalar({ customCss: "body { background: red; }" })({}, {
+      writeHead: () => {},
+      end: (body: string) => { html = body; },
+    });
+
+    expect(html).toContain("body { background: red; }");
+  });
+
+  test("json() handler returns the spec as JSON", async () => {
+    const api = openapi({ title: "JSON Test", version: "1.0.0" });
+    api.spec.paths["/test"] = { get: { summary: "Test" } };
+
+    let capturedBody = "";
+    let capturedStatus = 0;
+    let capturedHeaders: Record<string, string> = {};
+
+    api.json()(null, {
+      writeHead(status: number, headers: Record<string, string>) {
+        capturedStatus = status;
+        capturedHeaders = headers;
+      },
+      end(body: string) { capturedBody = body; },
+    });
+
+    const parsed = JSON.parse(capturedBody);
+    expect(capturedStatus).toBe(200);
+    expect(capturedHeaders["Content-Type"]).toContain("application/json");
+    expect(parsed.info.title).toBe("JSON Test");
+    expect(parsed.paths["/test"]).toBeDefined();
+  });
+
+  test("json() spec stays live — mutations after json() is called are reflected", () => {
+    const api = openapi({ title: "Live", version: "1.0.0" });
+
+    let lastBody = "";
+    const handler = api.json();
+
+    // First call — no paths
+    handler(null, { writeHead: () => {}, end: (b: string) => { lastBody = b; } });
+    expect(JSON.parse(lastBody).paths).toEqual({});
+
+    // Mutate spec
+    api.spec.paths["/added"] = { get: { summary: "Added later" } };
+
+    // Second call — should include the new path
+    handler(null, { writeHead: () => {}, end: (b: string) => { lastBody = b; } });
+    expect(JSON.parse(lastBody).paths["/added"]).toBeDefined();
+  });
+});
+
+// ==========================================
+// PRINCE - app.openapi() integration
+// ==========================================
+
+describe("Prince - app.openapi() integration", () => {
+  test("mounts GET /docs route serving Scalar HTML", async () => {
+    const app = prince();
+    app.openapi({ title: "My API", version: "1.0.0" }, "/docs");
+
+    const res = await app.fetch(new Request("http://localhost/docs"));
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const html = await res.text();
+    expect(html).toContain("@scalar/api-reference");
+  });
+
+  test("mounts GET /docs.json route serving raw spec", async () => {
+    const app = prince();
+    app.openapi({ title: "JSON Route API", version: "3.0.0" }, "/docs");
+
+    const res = await app.fetch(new Request("http://localhost/docs.json"));
+    const data = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(data.info.title).toBe("JSON Route API");
+    expect(data.info.version).toBe("3.0.0");
+  });
+
+  test("custom docsPath is respected", async () => {
+    const app = prince();
+    app.openapi({ title: "API", version: "1.0.0" }, "/reference");
+
+    const res = await app.fetch(new Request("http://localhost/reference"));
+    expect(res.status).toBe(200);
+
+    const jsonRes = await app.fetch(new Request("http://localhost/reference.json"));
+    expect(jsonRes.status).toBe(200);
+  });
+
+  test("api.route() returns the builder for chaining", () => {
+    const app = prince();
+    const api = app.openapi({ title: "API", version: "1.0.0" });
+
+    const result = api.route("GET", "/ping", { summary: "Ping" }, () => ({ pong: true }));
+
+    expect(result).toBe(api);
+  });
+
+  test("api.route() registers the route so Prince can handle requests", async () => {
+    const app = prince();
+    const api = app.openapi({ title: "API", version: "1.0.0" });
+
+    api.route("GET", "/hello", { summary: "Hello" }, () => ({ message: "hello" }));
+
+    const res = await app.fetch(new Request("http://localhost/hello"));
+    const data = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(data.message).toBe("hello");
+  });
+
+  test("api.route() writes path entry into spec", () => {
+    const app = prince();
+    const api = app.openapi({ title: "API", version: "1.0.0" });
+
+    api.route("GET", "/users", { summary: "List users" }, () => []);
+
+    expect(api.spec.paths["/users"]).toBeDefined();
+    expect((api.spec.paths["/users"] as any).get.summary).toBe("List users");
+  });
+
+  test("api.route() converts :param to {param} in spec path", () => {
+    const app = prince();
+    const api = app.openapi({ title: "API", version: "1.0.0" });
+
+    api.route("GET", "/users/:id", { summary: "Get user" }, (req) => ({ id: req.params?.id }));
+
+    expect(api.spec.paths["/users/{id}"]).toBeDefined();
+    expect(api.spec.paths["/users/:id"]).toBeUndefined();
+  });
+
+  test("api.route() auto-injects path param into parameters array", () => {
+    const app = prince();
+    const api = app.openapi({ title: "API", version: "1.0.0" });
+
+    api.route("GET", "/items/:itemId/reviews/:reviewId", { summary: "Get review" }, () => ({}));
+
+    const op = (api.spec.paths["/items/{itemId}/reviews/{reviewId}"] as any).get;
+    const paramNames = op.parameters.map((p: any) => p.name);
+
+    expect(paramNames).toContain("itemId");
+    expect(paramNames).toContain("reviewId");
+    expect(op.parameters[0].in).toBe("path");
+    expect(op.parameters[0].required).toBe(true);
+  });
+
+  test("api.route() handles POST with body", async () => {
+    const app = prince();
+    const api = app.openapi({ title: "API", version: "1.0.0" });
+
+    api.route("POST", "/users", { summary: "Create user" }, (req) => ({
+      created: true,
+      name: req.parsedBody?.name,
+    }));
+
+    const res = await app.fetch(
+      new Request("http://localhost/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Bob" }),
+      })
+    );
+    const data = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(data.created).toBe(true);
+    expect(data.name).toBe("Bob");
+  });
+
+  test("api.route() supports route-level middleware", async () => {
+    const app = prince();
+    const api = app.openapi({ title: "API", version: "1.0.0" });
+
+    const guardMw = async (req: any, next: any) => {
+      if (!req.headers.get("x-token")) {
+        return new Response(JSON.stringify({ error: "Forbidden" }), { status: 403 });
+      }
+      return next();
+    };
+
+    api.route("GET", "/secret", { summary: "Secret" }, guardMw, () => ({ secret: true }));
+
+    const denied = await app.fetch(new Request("http://localhost/secret"));
+    expect(denied.status).toBe(403);
+
+    const allowed = await app.fetch(
+      new Request("http://localhost/secret", { headers: { "x-token": "yes" } })
+    );
+    expect(allowed.status).toBe(200);
+  });
+
+  test("multiple api.route() calls accumulate in spec.paths", () => {
+    const app = prince();
+    const api = app.openapi({ title: "API", version: "1.0.0" });
+
+    api.route("GET", "/a", { summary: "A" }, () => "a");
+    api.route("POST", "/b", { summary: "B" }, () => "b");
+    api.route("DELETE", "/c/:id", { summary: "C" }, () => "c");
+
+    expect(Object.keys(api.spec.paths)).toHaveLength(3);
+    expect(api.spec.paths["/a"]).toBeDefined();
+    expect(api.spec.paths["/b"]).toBeDefined();
+    expect(api.spec.paths["/c/{id}"]).toBeDefined();
+  });
+
+  test("spec.paths is reflected in /docs.json after routes are added", async () => {
+    const app = prince();
+    const api = app.openapi({ title: "Live Spec", version: "1.0.0" }, "/docs");
+
+    api.route("GET", "/ping", { summary: "Ping" }, () => ({ pong: true }));
+
+    const res = await app.fetch(new Request("http://localhost/docs.json"));
+    const data = await res.json();
+
+    expect(data.paths["/ping"]).toBeDefined();
+    expect(data.paths["/ping"].get.summary).toBe("Ping");
+  });
+
+  test("app.get() routes are NOT added to spec automatically", () => {
+    const app = prince();
+    const api = app.openapi({ title: "API", version: "1.0.0" });
+
+    app.get("/internal/health", () => ({ ok: true }));
+
+    expect(api.spec.paths["/internal/health"]).toBeUndefined();
+  });
+});
+
+// ==========================================
+// SCHEMA - body validation
+// ==========================================
+
+describe("Schema - body auto-validation", () => {
+  test("valid body passes through to handler", async () => {
+    const app = prince();
+    const api = app.openapi({ title: "API", version: "1.0.0" });
+
+    const schema = {
+      body: z.object({ name: z.string(), age: z.number() }),
+    };
+
+    api.route("POST", "/users", { summary: "Create", schema }, (req) => ({
+      name: req.parsedBody?.name,
+      age: req.parsedBody?.age,
+    }));
+
+    const res = await app.fetch(
+      new Request("http://localhost/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Alice", age: 30 }),
+      })
+    );
+    const data = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(data.name).toBe("Alice");
+    expect(data.age).toBe(30);
+  });
+
+  test("invalid body returns 400 with validation details", async () => {
+    const app = prince();
+    const api = app.openapi({ title: "API", version: "1.0.0" });
+
+    const schema = {
+      body: z.object({ email: z.string().email() }),
+    };
+
+    api.route("POST", "/subscribe", { summary: "Subscribe", schema }, () => ({ ok: true }));
+
+    const res = await app.fetch(
+      new Request("http://localhost/subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: "not-an-email" }),
+      })
+    );
+    const data = await res.json();
+
+    expect(res.status).toBe(400);
+    expect(data.error).toBe("Validation failed");
+    expect(data.details).toBeArray();
+    expect(data.details.length).toBeGreaterThan(0);
+  });
+
+  test("missing required field returns 400", async () => {
+    const app = prince();
+    const api = app.openapi({ title: "API", version: "1.0.0" });
+
+    api.route("POST", "/items", {
+      summary: "Create item",
+      schema: { body: z.object({ name: z.string(), price: z.number() }) },
+    }, () => ({ ok: true }));
+
+    const res = await app.fetch(
+      new Request("http://localhost/items", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Widget" }), // missing price
+      })
+    );
+
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.details.some((d: any) => d.path === "price")).toBe(true);
+  });
+
+  test("optional fields in schema do not cause rejection", async () => {
+    const app = prince();
+    const api = app.openapi({ title: "API", version: "1.0.0" });
+
+    api.route("POST", "/profile", {
+      summary: "Update profile",
+      schema: {
+        body: z.object({
+          name: z.string(),
+          bio: z.string().optional(),
+        }),
+      },
+    }, (req) => ({ name: req.parsedBody?.name }));
+
+    const res = await app.fetch(
+      new Request("http://localhost/profile", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Alice" }), // no bio — that's fine
+      })
+    );
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.name).toBe("Alice");
+  });
+
+  test("schema.body writes requestBody into spec", () => {
+    const app = prince();
+    const api = app.openapi({ title: "API", version: "1.0.0" });
+
+    api.route("POST", "/users", {
+      summary: "Create user",
+      schema: {
+        body: z.object({ name: z.string(), age: z.number() }),
+      },
+    }, () => ({}));
+
+    const op = (api.spec.paths["/users"] as any).post;
+    expect(op.requestBody).toBeDefined();
+    expect(op.requestBody.required).toBe(true);
+    expect(op.requestBody.content["application/json"].schema.type).toBe("object");
+    expect(op.requestBody.content["application/json"].schema.properties.name).toEqual({ type: "string" });
+    expect(op.requestBody.content["application/json"].schema.properties.age).toEqual({ type: "number" });
+  });
+
+  test("schema.body marks required fields in JSON Schema", () => {
+    const app = prince();
+    const api = app.openapi({ title: "API", version: "1.0.0" });
+
+    api.route("POST", "/test", {
+      summary: "Test",
+      schema: {
+        body: z.object({
+          required: z.string(),
+          optional: z.string().optional(),
+        }),
+      },
+    }, () => ({}));
+
+    const jsonSchema = (api.spec.paths["/test"] as any).post.requestBody.content["application/json"].schema;
+    expect(jsonSchema.required).toContain("required");
+    expect(jsonSchema.required).not.toContain("optional");
+  });
+});
+
+// ==========================================
+// SCHEMA - query params
+// ==========================================
+
+describe("Schema - query params in spec", () => {
+  test("schema.query writes parameters into spec", () => {
+    const app = prince();
+    const api = app.openapi({ title: "API", version: "1.0.0" });
+
+    api.route("GET", "/search", {
+      summary: "Search",
+      schema: {
+        query: z.object({
+          q: z.string(),
+          limit: z.number().optional(),
+        }),
+      },
+    }, () => []);
+
+    const op = (api.spec.paths["/search"] as any).get;
+    const queryParams = op.parameters.filter((p: any) => p.in === "query");
+
+    expect(queryParams).toHaveLength(2);
+    const q = queryParams.find((p: any) => p.name === "q");
+    const limit = queryParams.find((p: any) => p.name === "limit");
+
+    expect(q.required).toBe(true);
+    expect(limit.required).toBe(false);
+  });
+
+  test("query params coexist with path params in parameters array", () => {
+    const app = prince();
+    const api = app.openapi({ title: "API", version: "1.0.0" });
+
+    api.route("GET", "/users/:id/posts", {
+      summary: "User posts",
+      schema: {
+        query: z.object({ page: z.number().optional() }),
+      },
+    }, () => []);
+
+    const op = (api.spec.paths["/users/{id}/posts"] as any).get;
+    const pathParams = op.parameters.filter((p: any) => p.in === "path");
+    const queryParams = op.parameters.filter((p: any) => p.in === "query");
+
+    expect(pathParams.map((p: any) => p.name)).toContain("id");
+    expect(queryParams.map((p: any) => p.name)).toContain("page");
+  });
+});
+
+// ==========================================
+// SCHEMA - response
+// ==========================================
+
+describe("Schema - response in spec", () => {
+  test("schema.response writes 200 response schema into spec", () => {
+    const app = prince();
+    const api = app.openapi({ title: "API", version: "1.0.0" });
+
+    const UserResponse = z.object({ id: z.string(), name: z.string() });
+
+    api.route("GET", "/me", {
+      summary: "Get current user",
+      schema: { response: UserResponse },
+    }, () => ({ id: "1", name: "Alice" }));
+
+    const op = (api.spec.paths["/me"] as any).get;
+    const responseSchema = op.responses[200].content["application/json"].schema;
+
+    expect(responseSchema.type).toBe("object");
+    expect(responseSchema.properties.id).toEqual({ type: "string" });
+    expect(responseSchema.properties.name).toEqual({ type: "string" });
+  });
+
+  test("schema.response with z.array wraps items correctly", () => {
+    const app = prince();
+    const api = app.openapi({ title: "API", version: "1.0.0" });
+
+    api.route("GET", "/items", {
+      summary: "List items",
+      schema: {
+        response: z.array(z.object({ id: z.number(), label: z.string() })),
+      },
+    }, () => []);
+
+    const op = (api.spec.paths["/items"] as any).get;
+    const responseSchema = op.responses[200].content["application/json"].schema;
+
+    expect(responseSchema.type).toBe("array");
+    expect(responseSchema.items.type).toBe("object");
+    expect(responseSchema.items.properties.id).toEqual({ type: "number" });
+  });
+
+  test("manually specified responses are preserved alongside schema.response", () => {
+    const app = prince();
+    const api = app.openapi({ title: "API", version: "1.0.0" });
+
+    api.route("DELETE", "/users/:id", {
+      summary: "Delete user",
+      schema: { response: z.object({ deleted: z.boolean() }) },
+      responses: {
+        404: { description: "User not found" },
+      },
+    }, () => ({ deleted: true }));
+
+    const op = (api.spec.paths["/users/{id}"] as any).delete;
+    expect(op.responses[200]).toBeDefined();
+    expect(op.responses[404]).toBeDefined();
+    expect(op.responses[404].description).toBe("User not found");
+  });
+
+  test("without schema.response a default 200 OK response is added", () => {
+    const app = prince();
+    const api = app.openapi({ title: "API", version: "1.0.0" });
+
+    api.route("GET", "/ping", { summary: "Ping" }, () => ({ pong: true }));
+
+    const op = (api.spec.paths["/ping"] as any).get;
+    expect(op.responses[200]).toBeDefined();
+    expect(op.responses[200].description).toBe("OK");
+  });
+});
+
+// ==========================================
+// SCHEMA - Zod → JSON Schema converter
+// ==========================================
+
+describe("Schema - Zod to JSON Schema conversion", () => {
+  const getBodySchema = (app: ReturnType<typeof prince>, api: any, path: string, method = "post") => {
+    return (api.spec.paths[path] as any)[method]?.requestBody?.content["application/json"]?.schema;
+  };
+
+  test("z.string() → { type: 'string' }", () => {
+    const app = prince();
+    const api = app.openapi({ title: "API", version: "1.0.0" });
+    api.route("POST", "/s", { schema: { body: z.object({ x: z.string() }) } }, () => ({}));
+    expect(getBodySchema(app, api, "/s").properties.x).toEqual({ type: "string" });
+  });
+
+  test("z.string().email() → { type: 'string', format: 'email' }", () => {
+    const app = prince();
+    const api = app.openapi({ title: "API", version: "1.0.0" });
+    api.route("POST", "/e", { schema: { body: z.object({ email: z.string().email() }) } }, () => ({}));
+    expect(getBodySchema(app, api, "/e").properties.email).toEqual({ type: "string", format: "email" });
+  });
+
+  test("z.string().min(3).max(50) → minLength / maxLength", () => {
+    const app = prince();
+    const api = app.openapi({ title: "API", version: "1.0.0" });
+    api.route("POST", "/ml", { schema: { body: z.object({ name: z.string().min(3).max(50) }) } }, () => ({}));
+    const schema = getBodySchema(app, api, "/ml").properties.name;
+    expect(schema.minLength).toBe(3);
+    expect(schema.maxLength).toBe(50);
+  });
+
+  test("z.number() → { type: 'number' }", () => {
+    const app = prince();
+    const api = app.openapi({ title: "API", version: "1.0.0" });
+    api.route("POST", "/n", { schema: { body: z.object({ count: z.number() }) } }, () => ({}));
+    expect(getBodySchema(app, api, "/n").properties.count).toEqual({ type: "number" });
+  });
+
+  test("z.number().int() → { type: 'integer' }", () => {
+    const app = prince();
+    const api = app.openapi({ title: "API", version: "1.0.0" });
+    api.route("POST", "/i", { schema: { body: z.object({ age: z.number().int() }) } }, () => ({}));
+    expect(getBodySchema(app, api, "/i").properties.age.type).toBe("integer");
+  });
+
+  test("z.number().min(0).max(100) → minimum / maximum", () => {
+    const app = prince();
+    const api = app.openapi({ title: "API", version: "1.0.0" });
+    api.route("POST", "/mm", { schema: { body: z.object({ pct: z.number().min(0).max(100) }) } }, () => ({}));
+    const schema = getBodySchema(app, api, "/mm").properties.pct;
+    expect(schema.minimum).toBe(0);
+    expect(schema.maximum).toBe(100);
+  });
+
+  test("z.boolean() → { type: 'boolean' }", () => {
+    const app = prince();
+    const api = app.openapi({ title: "API", version: "1.0.0" });
+    api.route("POST", "/b", { schema: { body: z.object({ active: z.boolean() }) } }, () => ({}));
+    expect(getBodySchema(app, api, "/b").properties.active).toEqual({ type: "boolean" });
+  });
+
+  test("z.enum() → { type: 'string', enum: [...] }", () => {
+    const app = prince();
+    const api = app.openapi({ title: "API", version: "1.0.0" });
+    api.route("POST", "/en", { schema: { body: z.object({ role: z.enum(["admin", "user"]) }) } }, () => ({}));
+    expect(getBodySchema(app, api, "/en").properties.role).toEqual({ type: "string", enum: ["admin", "user"] });
+  });
+
+  test("z.literal() → { enum: [value] }", () => {
+    const app = prince();
+    const api = app.openapi({ title: "API", version: "1.0.0" });
+    api.route("POST", "/lit", { schema: { body: z.object({ kind: z.literal("widget") }) } }, () => ({}));
+    expect(getBodySchema(app, api, "/lit").properties.kind).toEqual({ enum: ["widget"] });
+  });
+
+  test("z.array(z.string()) → { type: 'array', items: { type: 'string' } }", () => {
+    const app = prince();
+    const api = app.openapi({ title: "API", version: "1.0.0" });
+    api.route("POST", "/arr", { schema: { body: z.object({ tags: z.array(z.string()) }) } }, () => ({}));
+    expect(getBodySchema(app, api, "/arr").properties.tags).toEqual({ type: "array", items: { type: "string" } });
+  });
+
+  test("z.optional() fields are excluded from required[]", () => {
+    const app = prince();
+    const api = app.openapi({ title: "API", version: "1.0.0" });
+    api.route("POST", "/opt", {
+      schema: {
+        body: z.object({
+          required: z.string(),
+          optional: z.string().optional(),
+        }),
+      },
+    }, () => ({}));
+    const s = getBodySchema(app, api, "/opt");
+    expect(s.required).toContain("required");
+    expect(s.required).not.toContain("optional");
+  });
+
+  test("z.default() fields are excluded from required[] and include default value", () => {
+    const app = prince();
+    const api = app.openapi({ title: "API", version: "1.0.0" });
+    api.route("POST", "/def", {
+      schema: {
+        body: z.object({
+          page: z.number().default(1),
+        }),
+      },
+    }, () => ({}));
+    const s = getBodySchema(app, api, "/def");
+    // When all fields have defaults, required[] is absent entirely
+    expect(s.required == null || !s.required.includes("page")).toBe(true);
+    expect(s.properties.page.default).toBe(1);
+  });
+
+  test("z.union() → { oneOf: [...] }", () => {
+    const app = prince();
+    const api = app.openapi({ title: "API", version: "1.0.0" });
+    api.route("POST", "/uni", {
+      schema: {
+        body: z.object({ val: z.union([z.string(), z.number()]) }),
+      },
+    }, () => ({}));
+    const prop = getBodySchema(app, api, "/uni").properties.val;
+    expect(prop.oneOf).toBeDefined();
+    expect(prop.oneOf).toHaveLength(2);
+  });
+
+  test("z.record() → { type: 'object', additionalProperties: ... }", () => {
+    const app = prince();
+    const api = app.openapi({ title: "API", version: "1.0.0" });
+    api.route("POST", "/rec", {
+      schema: { body: z.object({ meta: z.record(z.string()) }) },
+    }, () => ({}));
+    const prop = getBodySchema(app, api, "/rec").properties.meta;
+    expect(prop.type).toBe("object");
+    expect(prop.additionalProperties).toEqual({ type: "string" });
+  });
+
+  test("nested z.object() is recursively converted", () => {
+    const app = prince();
+    const api = app.openapi({ title: "API", version: "1.0.0" });
+    api.route("POST", "/nested", {
+      schema: {
+        body: z.object({
+          address: z.object({
+            street: z.string(),
+            zip: z.string(),
+          }),
+        }),
+      },
+    }, () => ({}));
+    const address = getBodySchema(app, api, "/nested").properties.address;
+    expect(address.type).toBe("object");
+    expect(address.properties.street).toEqual({ type: "string" });
+    expect(address.properties.zip).toEqual({ type: "string" });
+  });
+});
+
+// ==========================================
+// SCHEDULER - cron()
+// ==========================================
+
+describe("Scheduler - cron()", () => {
+  test("cron executes task immediately when pattern matches current time", async () => {
+    const now = new Date();
+    const minute = now.getMinutes();
+    const hour = now.getHours();
+
+    let called = false;
+    cron(`${minute} ${hour} * * *`, () => { called = true; });
+
+    expect(called).toBe(true);
+  });
+
+  test("cron does not execute task when pattern does not match", () => {
+    const now = new Date();
+    // Pick a minute that will never be now
+    const wrongMinute = (now.getMinutes() + 5) % 60;
+    const hour = now.getHours();
+
+    let called = false;
+    cron(`${wrongMinute} ${hour} * * *`, () => { called = true; });
+
+    expect(called).toBe(false);
+  });
+
+  test("wildcard * matches any minute", () => {
+    const now = new Date();
+    const hour = now.getHours();
+
+    let called = false;
+    cron(`* ${hour} * * *`, () => { called = true; });
+
+    expect(called).toBe(true);
+  });
+
+  test("wildcard * matches any hour", () => {
+    const now = new Date();
+    const minute = now.getMinutes();
+
+    let called = false;
+    cron(`${minute} * * * *`, () => { called = true; });
+
+    expect(called).toBe(true);
+  });
+
+  test("step syntax */n matches when minute is divisible", () => {
+    const now = new Date();
+    // Find a step that divides the current minute (or use 1 which always matches)
+    const minute = now.getMinutes();
+    const step = minute === 0 ? 1 : minute; // minute % minute === 0 always
+    const hour = now.getHours();
+
+    let called = false;
+    cron(`*/${step} ${hour} * * *`, () => { called = true; });
+
+    expect(called).toBe(true);
+  });
+
+  test("comma-separated minutes list matches current minute", () => {
+    const now = new Date();
+    const minute = now.getMinutes();
+    const hour = now.getHours();
+    const otherMinute = (minute + 30) % 60;
+
+    let called = false;
+    cron(`${otherMinute},${minute} ${hour} * * *`, () => { called = true; });
+
+    expect(called).toBe(true);
+  });
+
+  test("cron error in task does not throw — is caught and logged", () => {
+    const now = new Date();
+    const minute = now.getMinutes();
+    const hour = now.getHours();
+
+    // Should not throw even though task throws
+    expect(() => {
+      cron(`${minute} ${hour} * * *`, () => {
+        throw new Error("Task exploded");
+      });
+    }).not.toThrow();
   });
 });
 
