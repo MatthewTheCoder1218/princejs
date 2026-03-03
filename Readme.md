@@ -1,17 +1,40 @@
-# 👑 **PrinceJS**
+<div align="center">
 
-![PrinceJS Image](./src/images/og.png)
+<img src="./src/images/og.png" alt="PrinceJS" width="120" />
 
-### ⚡ Ultra-clean, modern & minimal Bun web framework built by a 13 year old. Among the top three in performance.
+# 👑 PrinceJS
 
-![npm](https://img.shields.io/npm/v/princejs)
-![stars](https://img.shields.io/github/stars/MatthewTheCoder1218/princejs)
-![downloads](https://img.shields.io/npm/dt/princejs)
-![license](https://img.shields.io/github/license/MatthewTheCoder1218/princejs)
+**Ultra-clean, modern & minimal Bun web framework.**  
+Built by a 13-year-old Nigerian developer. Among the top three in performance.
+
+[![npm version](https://img.shields.io/npm/v/princejs?style=flat-square)](https://www.npmjs.com/package/princejs)
+[![GitHub stars](https://img.shields.io/github/stars/MatthewTheCoder1218/princejs?style=flat-square)](https://github.com/MatthewTheCoder1218/princejs)
+[![npm downloads](https://img.shields.io/npm/dt/princejs?style=flat-square)](https://www.npmjs.com/package/princejs)
+[![license](https://img.shields.io/github/license/MatthewTheCoder1218/princejs?style=flat-square)](https://github.com/MatthewTheCoder1218/princejs/blob/main/LICENSE)
+
+[**Website**](https://princejs.vercel.app) · [**npm**](https://www.npmjs.com/package/princejs) · [**GitHub**](https://github.com/MatthewTheCoder1218/princejs) · [**Twitter**](https://twitter.com/princejs_bun)
+
+</div>
+
+---
+
+## ⚡ Performance
+
+Benchmarked with `oha -c 100 -z 30s` on Windows 10:
+
+| Framework | Req/s | Total |
+|-----------|------:|------:|
+| Elysia | 25,312 | 759k |
+| Hono | 22,124 | 664k |
+| **PrinceJS** | **21,748** | **653k** |
+| Express | 9,325 | 280k |
+
+> PrinceJS is **2.3× faster than Express** and sits comfortably in the top 3 — at just **4.4kB gzipped**.
 
 ---
 
 ## 🚀 Quick Start
+
 ```bash
 bun create princejs my-app
 cd my-app
@@ -37,77 +60,30 @@ app.listen(3000);
 
 ## 🧰 Features
 
-```ts
-import { cors, logger, rateLimit, serve } from "princejs/middleware";
-import { validate } from "princejs/validation";
-import { z } from "zod";
+| Feature | Import |
+|---------|--------|
+| Routing | `princejs` |
+| Middleware (CORS, Logger, Rate Limit, Auth, JWT) | `princejs/middleware` |
+| Zod Validation | `princejs/middleware` |
+| File Uploads | `princejs/helpers` |
+| WebSockets | `princejs` |
+| Server-Sent Events | `princejs/helpers` |
+| Sessions | `princejs/middleware` |
+| Response Compression | `princejs/middleware` |
+| In-memory Cache | `princejs/helpers` |
+| Cron Scheduler | `princejs/scheduler` |
+| **OpenAPI + Scalar Docs** | `princejs` |
+| JSX / SSR | `princejs/jsx` |
+| SQLite Database | `princejs/db` |
+| Plugin System | `princejs` |
+| End-to-End Type Safety | `princejs/client` |
+| Deploy Adapters | `princejs/vercel` · `princejs/cloudflare` · `princejs/deno` |
 
-app
-  .use(cors())
-  .use(logger())
-  .use(rateLimit({ max: 100, window: 60 }))
-  .use(serve({ root: "./public" }))
-  .use(validate(z.object({ 
-    name: z.string(),
-    age: z.number() 
-  })));
-```
+---
 
-### Middleware
+## 📖 OpenAPI + Scalar Docs ✨
 
-* CORS
-* Logger
-* Rate Limiting
-* Static Files
-
-### Validation (Zod)
-
-### File Uploads
-
-### Response Builder
-
-### WebSocket Support
-
-### Auth & API Keys
-
-### Server-Sent Events
-
-### Sessions
-
-### Response Compression
-
-### Route-level Middleware
-
-### Plugin System
-
-You can share bundles of routes and middleware as plugins.
-
-```ts
-import { prince, type PrincePlugin } from "princejs";
-
-const usersPlugin: PrincePlugin<{ prefix?: string }> = (app, opts) => {
-  const base = opts?.prefix ?? "";
-
-  // plugin-wide middleware
-  app.use((req, next) => {
-    (req as any).fromPlugin = true;
-    return next();
-  });
-
-  // plugin routes
-  app.get(`${base}/users`, (req) => ({
-    ok: true,
-    fromPlugin: (req as any).fromPlugin,
-  }));
-};
-
-const app = prince();
-app.plugin(usersPlugin, { prefix: "/api" });
-```
-
-### OpenAPI + Scalar Docs
-
-Auto-generate an OpenAPI 3.0 spec and serve a beautiful [Scalar](https://scalar.com) API reference UI — all from a single `app.openapi()` call. Routes, validation, and docs stay in sync automatically.
+Auto-generate an OpenAPI 3.0 spec and serve a beautiful [Scalar](https://scalar.com) UI — all from a single `app.openapi()` call. Routes, validation, and docs stay in sync automatically.
 
 ```ts
 import { prince } from "princejs";
@@ -139,109 +115,96 @@ app.listen(3000);
 // → GET /docs.json  Raw OpenAPI JSON
 ```
 
-**`api.route()` does three things at once:**
-- Registers the route on PrinceJS (same as `app.get()` / `app.post()`)
-- Auto-wires `validate(schema.body)` middleware — no separate import needed
-- Writes the full OpenAPI spec entry including path params, request body, query params, and response schema
+`api.route()` does three things at once:
 
-| `schema` key | Runtime effect | Scalar docs |
+- ✅ Registers the route on PrinceJS
+- ✅ Auto-wires `validate(schema.body)` — no separate import needed
+- ✅ Writes the full OpenAPI spec entry
+
+| `schema` key | Runtime | Scalar Docs |
 |---|---|---|
-| `body` | ✅ Validates & strips via `validate()` | ✅ requestBody model |
-| `query` | ❌ docs only | ✅ typed query params |
-| `response` | ❌ docs only | ✅ 200 response model |
+| `body` | ✅ Validates request | ✅ requestBody model |
+| `query` | — | ✅ Typed query params |
+| `response` | — | ✅ 200 response model |
 
-Routes registered with `app.get()` / `app.post()` directly never appear in the docs — useful for internal health checks, webhooks, and admin endpoints.
+> Routes on `app.get()` / `app.post()` stay private — never appear in docs.
 
-**Available themes:** `default` · `moon` · `purple` · `solarized` · `bluePlanet` · `deepSpace` · `saturn` · `kepler` · `mars`
+**Themes:** `default` · `moon` · `purple` · `solarized` · `bluePlanet` · `deepSpace` · `saturn` · `kepler` · `mars`
 
-### Database (SQLite)
+---
 
-### End to End Type-Safety
+## 🔌 Plugin System
 
-PrinceJS supports contract-based type safety to sync your frontend and backend seamlessly. By defining an API contract, your client receives full TypeScript autocompletion and type-checking for routes, parameters, and responses.
+Share bundles of routes and middleware as reusable plugins:
 
+```ts
+import { prince, type PrincePlugin } from "princejs";
 
-**Define Your Contract**
+const usersPlugin: PrincePlugin<{ prefix?: string }> = (app, opts) => {
+  const base = opts?.prefix ?? "";
+
+  app.use((req, next) => {
+    (req as any).fromPlugin = true;
+    return next();
+  });
+
+  app.get(`${base}/users`, (req) => ({
+    ok: true,
+    fromPlugin: (req as any).fromPlugin,
+  }));
+};
+
+const app = prince();
+app.plugin(usersPlugin, { prefix: "/api" });
+```
+
+---
+
+## 🔒 End-to-End Type Safety
+
+Define a contract once — your client gets full TypeScript autocompletion automatically:
 
 ```ts
 type ApiContract = {
-  "GET /users/:id": { 
-    params: { id: string }; 
-    response: { id: string; name: string }; 
+  "GET /users/:id": {
+    params: { id: string };
+    response: { id: string; name: string };
   };
-  "POST /users": { 
-    body: { name: string }; 
-    response: { id: string; ok: boolean }; 
+  "POST /users": {
+    body: { name: string };
+    response: { id: string; ok: boolean };
   };
 };
-```
 
-**Initialize The Client**
-
-```ts
 import { createClient } from "princejs/client";
 
 const client = createClient<ApiContract>("http://localhost:3000");
 
-// Fully typed request and response
 const user = await client.get("/users/:id", { params: { id: "42" } });
-console.log(user.name); // Typed as string
+console.log(user.name); // typed as string ✅
 ```
 
 ---
 
-## Deploy (Vercel, Workers, Deno)
+## 🌍 Deploy Adapters
 
-Official adapters let you run the same Prince app on Vercel Edge, Cloudflare Workers, and Deno Deploy.
-
-**Vercel (Edge)** — `api/[[...route]].ts`:
-
+**Vercel Edge** — `api/[[...route]].ts`
 ```ts
-import { prince } from "princejs";
 import { toVercel } from "princejs/vercel";
-
-const app = prince();
-app.get("/", () => ({ message: "Hello from Vercel!" }));
-
 export default toVercel(app);
 ```
 
-**Cloudflare Workers** — `src/index.ts`:
-
+**Cloudflare Workers** — `src/index.ts`
 ```ts
-import { prince } from "princejs";
 import { toWorkers } from "princejs/cloudflare";
-
-const app = prince();
-app.get("/", () => ({ message: "Hello from Workers!" }));
-
 export default toWorkers(app);
 ```
 
-**Deno Deploy** — `main.ts`:
-
+**Deno Deploy** — `main.ts`
 ```ts
-import { prince } from "princejs";
 import { toDeno } from "princejs/deno";
-
-const app = prince();
-app.get("/", () => ({ message: "Hello from Deno!" }));
-
 Deno.serve(toDeno(app));
 ```
-
----
-
-## Performance With Oha (oha -c 100 -z 30s)
-
-| Framework | Req/s          | Total  |
-|-----------|----------------|--------|
-| Elysia    | 25,312 req/s   | 759k   |
-| Hono      | 22,124 req/s   | 664k   |
-| PrinceJS  | 21,748 req/s   | 653k   |
-| Express   | 9,325 req/s    | 280k   |
-
-### Among the top three
 
 ---
 
@@ -252,89 +215,51 @@ import { prince } from "princejs";
 import { cors, logger, rateLimit, auth, apiKey, jwt, session, compress, serve } from "princejs/middleware";
 import { validate } from "princejs/validation";
 import { cache, upload, sse } from "princejs/helpers";
-import { cron, openapi } from "princejs/scheduler";
-import { Html, Head, Body, H1, P, render } from "princejs/jsx"
+import { cron } from "princejs/scheduler";
+import { Html, Head, Body, H1, P, render } from "princejs/jsx";
 import { db } from "princejs/db";
 import { z } from "zod";
 
 const app = prince(true);
 
+// Global middleware
 app.use(cors());
 app.use(logger());
 app.use(rateLimit({ max: 100, window: 60 }));
-
 app.use(serve({ root: "./public" }));
-
-app.use(validate(z.object({ name: z.string() })));
-
 app.use(jwt(key));
 app.use(session({ secret: "key" }));
 app.use(compress());
 
-const Page = () => Html(
-  Head("Test Page"),
-  Body(
-    H1("Hello World"),
-    P("This is a test")
-  )
-);
+// JSX
+const Page = () => Html(Head("Test Page"), Body(H1("Hello World"), P("This is a test")));
+app.get("/jsx", () => render(Page()));
 
-// With props (optional)
-const Card = (props: any) => Div(
-  { className: "card", style: "padding: 1rem;" },
-  H1(props.title),
-  P(props.content)
-);
-
-// Without props
-const Simple = () => Div(
-  H1("No Props Needed"),
-  P("Just pure content")
-);
-
-const requireAuth = async (req: any, next: any) => {
-  const token = req.headers.get("Authorization");
-  if (!token) return new Response("Unauthorized", { status: 401 });
-  req.user = { id: 1, name: "Alice" };
-  return next();
-};
-
-app.get("/protected", requireAuth, async (req) => {
-  return { user: req.user };
-});
-
+// Database
 const users = db.sqlite("./db.sqlite", "CREATE TABLE users...");
+app.get("/users", () => users.query("SELECT * FROM users"));
 
+// WebSockets
 app.ws("/chat", {
   open: (ws) => ws.send("Welcome!"),
-  message: (ws, msg) => ws.send(`Echo: ${msg}`)
+  message: (ws, msg) => ws.send(`Echo: ${msg}`),
 });
 
-
+// Auth
 app.get("/protected", auth(), (req) => ({ user: req.user }));
 app.get("/api", apiKey({ keys: ["key_123"] }), handler);
 
-app.get("/", () => ({ message: "Welcome to PrinceJS" }));
-
-app.get("/users/:id", (req) => ({ id: req.params.id }));
-
-app.get("/jsx", () => render(Page()));
-
+// Helpers
 app.get("/data", cache(60)(() => ({ time: Date.now() })));
-
 app.post("/upload", upload(), (req) => ({ files: Object.keys(req.files || {}) }));
-
 app.get("/events", sse(), (req) => {
   setInterval(() => req.sseSend({ time: Date.now() }), 1000);
 });
 
-app.get("/count", (req) => ({ visits: req.session.visits++ || 1 }));
-
-app.get("/users", () => users.query("SELECT * FROM users"));
-
+// Cron
 cron("*/1 * * * *", () => console.log("PrinceJS heartbeat"));
 
-// OpenAPI + Scalar
+// OpenAPI + Scalar docs
 const api = app.openapi({ title: "PrinceJS App", version: "1.0.0" }, "/docs");
 api.route("GET", "/items", {
   summary: "List items",
@@ -353,18 +278,12 @@ app.listen(3000);
 ## 📦 Installation
 
 ```bash
-npm install princejs
-# or
 bun add princejs
+# or
+npm install princejs
 # or
 yarn add princejs
 ```
-
----
-
-## 📚 Documentation
-
-Visit: **princejs.vercel.app**
 
 ---
 
@@ -379,20 +298,19 @@ bun test
 
 ---
 
-## ⭐ Star This Repo
-
-If PrinceJS helped you, star the repo!
-
-GitHub: [https://github.com/MatthewTheCoder1218/princejs](https://github.com/MatthewTheCoder1218/princejs)
-
----
-
 ## 🔗 Links
 
-* npm: [https://www.npmjs.com/package/princejs](https://www.npmjs.com/package/princejs)
-* GitHub: [https://github.com/MatthewTheCoder1218/princejs](https://github.com/MatthewTheCoder1218/princejs)
-* Twitter: [https://twitter.com/Lil_Prince_1218](https://twitter.com/Lil_Prince_1218)
+- 🌐 Website: [princejs.vercel.app](https://princejs.vercel.app)
+- 📦 npm: [npmjs.com/package/princejs](https://www.npmjs.com/package/princejs)
+- 💻 GitHub: [github.com/MatthewTheCoder1218/princejs](https://github.com/MatthewTheCoder1218/princejs)
+- 🐦 Twitter: [@princejs_bun](https://twitter.com/princejs_bun)
 
 ---
 
-**PrinceJS: Small in size. Giant in capability. 🚀**
+<div align="center">
+
+**PrinceJS: Small in size. Giant in capability. 👑**
+
+*Built with ❤️ in Nigeria*
+
+</div>
