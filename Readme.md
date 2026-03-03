@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="./src/images/og.png" alt="PrinceJS" width="120" />
+<img src="./src/images/og.png" alt="PrinceJS"/>
 
 # 👑 PrinceJS
 
