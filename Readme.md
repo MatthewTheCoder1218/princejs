@@ -36,9 +36,9 @@ Benchmarked with `oha -c 100 -z 30s` on Windows 10:
 ## 🚀 Quick Start
 
 ```bash
-bun create princejs my-app
-cd my-app
-bun dev
+npm install princejs
+bun add princejs
+yarn add princejs
 ```
 
 ```ts
