@@ -21,6 +21,12 @@ export interface PrinceRequest extends Request {
   [key: string]: any;
 }
 
+// Lifecycle hooks
+export type OnRequest = (req: PrinceRequest) => void | Promise<void>;
+export type OnBeforeHandle = (req: PrinceRequest, path: string, method: string) => void | Promise<void>;
+export type OnAfterHandle = (req: PrinceRequest, res: Response, path: string, method: string) => void | Promise<void>;
+export type OnError = (err: any, req: PrinceRequest, path: string, method: string) => void | Promise<void>;
+
 interface WebSocketHandler {
   open?: (ws: any) => void;
   message?: (ws: any, msg: string | Buffer) => void;
@@ -312,6 +318,12 @@ export class Prince {
     middlewares: Middleware[];
     allowedMethods?: string[];
   }>();
+  
+  // Lifecycle hooks
+  private onRequestHooks: OnRequest[] = [];
+  private onBeforeHandleHooks: OnBeforeHandle[] = [];
+  private onAfterHandleHooks: OnAfterHandle[] = [];
+  private onErrorHooks: OnError[] = [];
 
   constructor(private devMode = false) {}
 
@@ -340,6 +352,26 @@ export class Prince {
 
   error(fn: (err: any, req: PrinceRequest) => Response) {
     this.errorHandler = fn;
+    return this;
+  }
+
+  onRequest(hook: OnRequest) {
+    this.onRequestHooks.push(hook);
+    return this;
+  }
+
+  onBeforeHandle(hook: OnBeforeHandle) {
+    this.onBeforeHandleHooks.push(hook);
+    return this;
+  }
+
+  onAfterHandle(hook: OnAfterHandle) {
+    this.onAfterHandleHooks.push(hook);
+    return this;
+  }
+
+  onError(hook: OnError) {
+    this.onErrorHooks.push(hook);
     return this;
   }
 
@@ -637,7 +669,9 @@ export class Prince {
     handler: RouteHandler, 
     params: Record<string, string>, 
     query: URLSearchParams,
-    routeMiddlewares: Middleware[]
+    routeMiddlewares: Middleware[],
+    method: string,
+    pathname: string
   ): Promise<Response> {
     Object.defineProperty(req, 'params', { value: params, writable: true, configurable: true });
     Object.defineProperty(req, 'query', { value: query, writable: true, configurable: true });
@@ -661,6 +695,11 @@ export class Prince {
       configurable: true 
     });
 
+    // Call onBeforeHandle hooks
+    for (const hook of this.onBeforeHandleHooks) {
+      await hook(req, pathname, method);
+    }
+
     // OPTIMIZED: Only create combined array if route has middleware
     const allMiddlewares = routeMiddlewares.length > 0 
       ? [...this.middlewares, ...routeMiddlewares]
@@ -680,7 +719,14 @@ export class Prince {
       return this.json(res);
     };
 
-    return next();
+    const response = await next();
+
+    // Call onAfterHandle hooks
+    for (const hook of this.onAfterHandleHooks) {
+      await hook(req, response.clone(), pathname, method);
+    }
+
+    return response;
   }
 
   async handleFetch(req: Request): Promise<Response> {
@@ -688,6 +734,11 @@ export class Prince {
     const r = req as PrinceRequest;
     const method = req.method;
     const pathname = url.pathname;
+
+    // Call onRequest hooks
+    for (const hook of this.onRequestHooks) {
+      await hook(r);
+    }
 
     const routeMatch = this.findRoute(method, pathname);
     
@@ -708,13 +759,22 @@ export class Prince {
       );
     }
 
-    return this.executeHandler(r, routeMatch.handler, routeMatch.params, url.searchParams, routeMatch.middlewares);
+    return this.executeHandler(r, routeMatch.handler, routeMatch.params, url.searchParams, routeMatch.middlewares, method, pathname);
   }
 
   async fetch(req: Request): Promise<Response> {
+    const url = new URL(req.url);
+    const pathname = url.pathname;
+    const method = req.method;
+    
     try {
       return await this.handleFetch(req);
     } catch (err) {
+      // Call onError hooks
+      for (const hook of this.onErrorHooks) {
+        await hook(err, req as PrinceRequest, pathname, method);
+      }
+
       if (this.errorHandler) return this.errorHandler(err, req as PrinceRequest);
       if (this.devMode) {
         console.error("Error:", err);

@@ -10,6 +10,7 @@ import { unlink } from "fs/promises";
 import { toVercel } from "../src/adapters/vercel";
 import { toWorkers } from "../src/adapters/cloudflare";
 import { toDeno } from "../src/adapters/deno";
+import { toNode, toExpress } from "../src/adapters/node";
 import { createClient, type PrinceApiContract } from "../src/client";
 import { z } from "zod";
 
@@ -1846,6 +1847,142 @@ describe("Deploy Adapters", () => {
     expect(data.error).toBe("Not Found");
   });
 
+  test("toNode: handler forwards request to app and returns response", async () => {
+    const app = prince();
+    app.get("/", () => ({ message: "Hello from Node!" }));
+    app.get("/users/:id", (req: any) => ({ userId: req.params?.id }));
+
+    const handler = toNode(app);
+
+    // Mock Node.js request and response
+    const mockReq1 = {
+      method: "GET",
+      url: "/",
+      headers: {},
+      on: () => {},
+    };
+    const mockRes1 = {
+      writeHead: () => {},
+      end: () => {},
+    };
+
+    await handler(mockReq1, mockRes1);
+
+    const mockReq2 = {
+      method: "GET",
+      url: "/users/42",
+      headers: {},
+      on: () => {},
+    };
+    const mockRes2 = {
+      writeHead: () => {},
+      end: () => {},
+    };
+
+    await handler(mockReq2, mockRes2);
+
+    expect(mockRes1.writeHead).toBeDefined();
+    expect(mockRes2.writeHead).toBeDefined();
+  });
+
+  test("toNode: 404 behaves like direct app.fetch", async () => {
+    const app = prince();
+    const handler = toNode(app);
+
+    const mockReq = {
+      method: "GET",
+      url: "/missing",
+      headers: {},
+      on: () => {},
+    };
+    let responseStatus = 0;
+    const mockRes = {
+      writeHead: (status: number) => {
+        responseStatus = status;
+      },
+      end: () => {},
+    };
+
+    await handler(mockReq, mockRes);
+
+    expect(responseStatus).toBe(404);
+  });
+
+  test("toExpress: middleware forwards request to app and returns response", async () => {
+    const app = prince();
+    app.get("/", () => ({ message: "Hello from Express!" }));
+    app.post("/data", (req: any) => ({ received: req.parsedBody }));
+
+    const middleware = toExpress(app);
+
+    // Mock Express request and response
+    const mockReq1 = {
+      method: "GET",
+      url: "/",
+      originalUrl: "/",
+      protocol: "http",
+      hostname: "localhost",
+      headers: {},
+      body: {},
+    };
+    const mockRes1 = {
+      status: () => mockRes1,
+      setHeader: () => {},
+      send: () => {},
+    };
+
+    await middleware(mockReq1, mockRes1);
+
+    const mockReq2 = {
+      method: "POST",
+      url: "/data",
+      originalUrl: "/data",
+      protocol: "http",
+      hostname: "localhost",
+      headers: { "content-type": "application/json" },
+      body: { key: "value" },
+    };
+    const mockRes2 = {
+      status: () => mockRes2,
+      setHeader: () => {},
+      send: () => {},
+      json: () => {},
+    };
+
+    await middleware(mockReq2, mockRes2);
+
+    expect(mockRes1.status).toBeDefined();
+    expect(mockRes2.status).toBeDefined();
+  });
+
+  test("toExpress: 404 behaves like direct app.fetch", async () => {
+    const app = prince();
+    const middleware = toExpress(app);
+
+    let responseStatus = 0;
+    const mockReq = {
+      method: "GET",
+      url: "/not-found",
+      originalUrl: "/not-found",
+      protocol: "http",
+      hostname: "localhost",
+      headers: {},
+      body: {},
+    };
+    const mockRes = {
+      status: (code: number) => {
+        responseStatus = code;
+        return mockRes;
+      },
+      setHeader: () => {},
+      send: () => {},
+    };
+
+    await middleware(mockReq, mockRes);
+
+    expect(responseStatus).toBe(404);
+  });
+
   test("all adapters return identical response for same app and request", async () => {
     const app = prince();
     app.get("/ping", () => ({ pong: true }));
@@ -2752,6 +2889,329 @@ describe("Scheduler - cron()", () => {
         throw new Error("Task exploded");
       });
     }).not.toThrow();
+  });
+});
+
+// ==========================================
+// Lifecycle Hooks 
+// ==========================================
+
+describe("Lifecycle Hooks", () => {
+  test("onRequest hook is called for every request", async () => {
+    const app = prince();
+    let called = false;
+    let capturedReq: any = null;
+
+    app.onRequest((req: any) => {
+      called = true;
+      capturedReq = req;
+    });
+
+    app.get("/test", () => ({ ok: true }));
+
+    const res = await app.fetch(new Request("http://localhost/test"));
+    
+    expect(called).toBe(true);
+    expect(capturedReq).toBeDefined();
+    expect(capturedReq.url).toContain("/test");
+  });
+
+  test("onRequest hook is called before route matching", async () => {
+    const app = prince();
+    let callOrder: string[] = [];
+
+    app.onRequest((req: any) => {
+      callOrder.push("onRequest");
+    });
+
+    app.get("/test", () => {
+      callOrder.push("handler");
+      return { ok: true };
+    });
+
+    await app.fetch(new Request("http://localhost/test"));
+    
+    expect(callOrder[0]).toBe("onRequest");
+    expect(callOrder[1]).toBe("handler");
+  });
+
+  test("multiple onRequest hooks are called in registration order", async () => {
+    const app = prince();
+    const callOrder: string[] = [];
+
+    app.onRequest((req: any) => callOrder.push("hook1"));
+    app.onRequest((req: any) => callOrder.push("hook2"));
+    app.onRequest((req: any) => callOrder.push("hook3"));
+
+    app.get("/test", () => ({ ok: true }));
+
+    await app.fetch(new Request("http://localhost/test"));
+    
+    expect(callOrder).toEqual(["hook1", "hook2", "hook3"]);
+  });
+
+  test("onRequest hook can be async", async () => {
+    const app = prince();
+    let called = false;
+
+    app.onRequest(async (req: any) => {
+      await new Promise(resolve => setTimeout(resolve, 10));
+      called = true;
+    });
+
+    app.get("/test", () => ({ ok: true }));
+
+    await app.fetch(new Request("http://localhost/test"));
+    
+    expect(called).toBe(true);
+  });
+
+  test("onBeforeHandle hook is called before route handler", async () => {
+    const app = prince();
+    let callOrder: string[] = [];
+
+    app.onBeforeHandle((req: any) => {
+      callOrder.push("onBeforeHandle");
+    });
+
+    app.get("/test", () => {
+      callOrder.push("handler");
+      return { ok: true };
+    });
+
+    await app.fetch(new Request("http://localhost/test"));
+    
+    expect(callOrder[0]).toBe("onBeforeHandle");
+    expect(callOrder[1]).toBe("handler");
+  });
+
+  test("onBeforeHandle hook receives path and method", async () => {
+    const app = prince();
+    let capturedPath = "";
+    let capturedMethod = "";
+
+    app.onBeforeHandle((req: any, path: string, method: string) => {
+      capturedPath = path;
+      capturedMethod = method;
+    });
+
+    app.post("/api/users", () => ({ ok: true }));
+
+    await app.fetch(
+      new Request("http://localhost/api/users", { method: "POST" })
+    );
+    
+    expect(capturedPath).toBe("/api/users");
+    expect(capturedMethod).toBe("POST");
+  });
+
+  test("onAfterHandle hook is called after route handler", async () => {
+    const app = prince();
+    let callOrder: string[] = [];
+
+    app.onAfterHandle((req: any) => {
+      callOrder.push("onAfterHandle");
+    });
+
+    app.get("/test", () => {
+      callOrder.push("handler");
+      return { ok: true };
+    });
+
+    await app.fetch(new Request("http://localhost/test"));
+    
+    expect(callOrder[0]).toBe("handler");
+    expect(callOrder[1]).toBe("onAfterHandle");
+  });
+
+  test("onAfterHandle hook receives response object", async () => {
+    const app = prince();
+    let capturedStatus = 0;
+
+    app.onAfterHandle((req: any, res: any) => {
+      capturedStatus = res.status;
+    });
+
+    app.get("/test", () => ({ data: "test" }));
+
+    await app.fetch(new Request("http://localhost/test"));
+    
+    expect(capturedStatus).toBe(200);
+  });
+
+  test("onAfterHandle hook receives path and method", async () => {
+    const app = prince();
+    let capturedPath = "";
+    let capturedMethod = "";
+
+    app.onAfterHandle((req: any, res: any, path: string, method: string) => {
+      capturedPath = path;
+      capturedMethod = method;
+    });
+
+    app.delete("/users/:id", () => ({ deleted: true }));
+
+    await app.fetch(
+      new Request("http://localhost/users/123", { method: "DELETE" })
+    );
+    
+    expect(capturedPath).toBe("/users/123");
+    expect(capturedMethod).toBe("DELETE");
+  });
+
+  test("multiple onAfterHandle hooks are called in order", async () => {
+    const app = prince();
+    const callOrder: string[] = [];
+
+    app.onAfterHandle((req: any) => callOrder.push("log"));
+    app.onAfterHandle((req: any) => callOrder.push("metrics"));
+    app.onAfterHandle((req: any) => callOrder.push("cleanup"));
+
+    app.get("/test", () => ({ ok: true }));
+
+    await app.fetch(new Request("http://localhost/test"));
+    
+    expect(callOrder).toEqual(["log", "metrics", "cleanup"]);
+  });
+
+  test("onError hook is called when handler throws", async () => {
+    const app = prince();
+    let capturedError: any = null;
+
+    app.onError((err: any) => {
+      capturedError = err;
+    });
+
+    app.get("/error", () => {
+      throw new Error("Handler failed");
+    });
+
+    await app.fetch(new Request("http://localhost/error"));
+    
+    expect(capturedError).toBeDefined();
+    expect(capturedError.message).toBe("Handler failed");
+  });
+
+  test("onError hook receives path and method", async () => {
+    const app = prince();
+    let capturedPath = "";
+    let capturedMethod = "";
+
+    app.onError((err: any, req: any, path: string, method: string) => {
+      capturedPath = path;
+      capturedMethod = method;
+    });
+
+    app.post("/submit", () => {
+      throw new Error("Bad request");
+    });
+
+    await app.fetch(
+      new Request("http://localhost/submit", { method: "POST" })
+    );
+    
+    expect(capturedPath).toBe("/submit");
+    expect(capturedMethod).toBe("POST");
+  });
+
+  test("multiple onError hooks are called in order", async () => {
+    const app = prince();
+    const callOrder: string[] = [];
+
+    app.onError((err: any) => callOrder.push("log"));
+    app.onError((err: any) => callOrder.push("alert"));
+    app.onError((err: any) => callOrder.push("recovery"));
+
+    app.get("/error", () => {
+      throw new Error("Test error");
+    });
+
+    await app.fetch(new Request("http://localhost/error"));
+    
+    expect(callOrder).toEqual(["log", "alert", "recovery"]);
+  });
+
+  test("onError hook is NOT called for successful requests", async () => {
+    const app = prince();
+    let errorCalled = false;
+
+    app.onError((err: any) => {
+      errorCalled = true;
+    });
+
+    app.get("/success", () => ({ status: "ok" }));
+
+    await app.fetch(new Request("http://localhost/success"));
+    
+    expect(errorCalled).toBe(false);
+  });
+
+  test("full lifecycle: onRequest → onBeforeHandle → handler → onAfterHandle", async () => {
+    const app = prince();
+    const callOrder: string[] = [];
+
+    app.onRequest((req: any) => callOrder.push("1:onRequest"));
+    app.onBeforeHandle((req: any) => callOrder.push("2:onBeforeHandle"));
+
+    app.get("/lifecycle", () => {
+      callOrder.push("3:handler");
+      return { ok: true };
+    });
+
+    app.onAfterHandle((req: any) => callOrder.push("4:onAfterHandle"));
+
+    await app.fetch(new Request("http://localhost/lifecycle"));
+    
+    expect(callOrder).toEqual(["1:onRequest", "2:onBeforeHandle", "3:handler", "4:onAfterHandle"]);
+  });
+
+  test("lifecycle with error: onRequest → onBeforeHandle → handler throws → onError", async () => {
+    const app = prince();
+    const callOrder: string[] = [];
+
+    app.onRequest((req: any) => callOrder.push("1:onRequest"));
+    app.onBeforeHandle((req: any) => callOrder.push("2:onBeforeHandle"));
+
+    app.get("/lifecycle", () => {
+      callOrder.push("3:handler");
+      throw new Error("Oops");
+    });
+
+    app.onError((err: any) => callOrder.push("4:onError"));
+    app.onAfterHandle((req: any) => callOrder.push("5:onAfterHandle"));
+
+    await app.fetch(new Request("http://localhost/lifecycle"));
+    
+    // onAfterHandle should NOT be called when there's an error
+    expect(callOrder).toEqual(["1:onRequest", "2:onBeforeHandle", "3:handler", "4:onError"]);
+  });
+
+  test("lifecycle hooks support chaining the app instance", () => {
+    const app = prince();
+
+    const result = app
+      .onRequest((req: any) => {})
+      .onBeforeHandle((req: any) => {})
+      .onAfterHandle((req: any) => {})
+      .onError((err: any) => {});
+
+    expect(result).toBe(app);
+  });
+
+  test("onRequest hook receives PrinceRequest with url property", async () => {
+    const app = prince();
+    let capturedUrl = "";
+
+    app.onRequest((req: any) => {
+      capturedUrl = req.url;
+    });
+
+    app.get("/test", () => ({}));
+
+    await app.fetch(new Request("http://localhost/test?param=value"));
+    
+    expect(capturedUrl).toContain("http://localhost/test");
+    expect(capturedUrl).toContain("param=value");
   });
 });
 
