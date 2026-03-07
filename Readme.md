@@ -1,7 +1,5 @@
 <div align="center">
 
-<img src="./src/images/og.png" alt="PrinceJS"/>
-
 # 👑 PrinceJS
 
 **Ultra-clean, modern & minimal Bun web framework.**  
@@ -77,7 +75,8 @@ app.listen(3000);
 | SQLite Database | `princejs/db` |
 | Plugin System | `princejs` |
 | End-to-End Type Safety | `princejs/client` |
-| Deploy Adapters | `princejs/vercel` · `princejs/cloudflare` · `princejs/deno` |
+| Deploy Adapters | `princejs/vercel` · `princejs/cloudflare` · `princejs/deno` · `princejs/node` |
+| Lifecycle Hooks | `princejs` | 
 
 ---
 
@@ -160,6 +159,57 @@ app.plugin(usersPlugin, { prefix: "/api" });
 
 ---
 
+## 🎣 Lifecycle Hooks
+
+React to key moments in request processing with lifecycle hooks:
+
+```ts
+import { prince } from "princejs";
+
+const app = prince();
+
+// Called for every incoming request
+app.onRequest((req) => {
+  console.log(`📥 Request received: ${req.method} ${req.url}`);
+});
+
+// Called before handler execution
+app.onBeforeHandle((req, path, method) => {
+  console.log(`🔍 About to handle: ${method} ${path}`);
+  (req as any).startTime = Date.now();
+});
+
+// Called after successful handler execution
+app.onAfterHandle((req, res, path, method) => {
+  const duration = Date.now() - (req as any).startTime;
+  console.log(`✅ Response: ${method} ${path} ${res.status} (${duration}ms)`);
+});
+
+// Called when handler throws an error
+app.onError((err, req, path, method) => {
+  console.error(`❌ Error in ${method} ${path}:`, err.message);
+  // Send alert, log to monitoring service, etc.
+});
+
+app.get("/users", () => ({ users: [] }));
+```
+
+**Hook execution order:**
+1. `onRequest` — early for request-wide setup
+2. `onBeforeHandle` — just before route handler runs
+3. Handler executes
+4. `onAfterHandle` — after success (on error, skipped)
+5. `onError` — only if handler throws (skips onAfterHandle)
+
+**Use cases:**
+- 📊 Metrics & observability
+- 🔍 Request inspection & debugging
+- ⏱️ Timing & performance monitoring
+- 🚨 Error tracking & alerting  
+- 🔐 Security audits & compliance logging
+
+---
+
 ## 🔒 End-to-End Type Safety
 
 Define a contract once — your client gets full TypeScript autocompletion automatically:
@@ -206,6 +256,25 @@ import { toDeno } from "princejs/deno";
 Deno.serve(toDeno(app));
 ```
 
+**Node Adapter** - `server.ts`
+```ts
+import { createServer } from "http";
+import { toNode, toExpress } from "princejs/node";
+
+const app = prince();
+app.get("/", () => ({ message: "Hello from Node!" }));
+
+// Native Node.js http
+const server = createServer(toNode(app));
+server.listen(3000);
+
+// Or with Express
+import express from "express";
+const expressApp = express();
+expressApp.all("*", toExpress(app));
+expressApp.listen(3000);
+```
+
 ---
 
 ## 🎯 Full Example
@@ -222,7 +291,29 @@ import { z } from "zod";
 
 const app = prince(true);
 
-// Global middleware
+// ==========================================
+// LIFECYCLE HOOKS - Timing & Observability
+// ==========================================
+app.onRequest((req) => {
+  (req as any).startTime = Date.now();
+});
+
+app.onBeforeHandle((req, path, method) => {
+  console.log(`🔍 Handling: ${method} ${path}`);
+});
+
+app.onAfterHandle((req, res, path, method) => {
+  const duration = Date.now() - (req as any).startTime;
+  console.log(`✅ ${method} ${path} → ${res.status} (${duration}ms)`);
+});
+
+app.onError((err, req, path, method) => {
+  console.error(`❌ ${method} ${path} failed:`, err.message);
+});
+
+// ==========================================
+// GLOBAL MIDDLEWARE
+// ==========================================
 app.use(cors());
 app.use(logger());
 app.use(rateLimit({ max: 100, window: 60 }));
@@ -230,6 +321,10 @@ app.use(serve({ root: "./public" }));
 app.use(jwt(key));
 app.use(session({ secret: "key" }));
 app.use(compress());
+
+// ==========================================
+// ROUTES
+// ==========================================
 
 // JSX
 const Page = () => Html(Head("Test Page"), Body(H1("Hello World"), P("This is a test")));
@@ -247,7 +342,7 @@ app.ws("/chat", {
 
 // Auth
 app.get("/protected", auth(), (req) => ({ user: req.user }));
-app.get("/api", apiKey({ keys: ["key_123"] }), handler);
+app.get("/api", apiKey({ keys: ["key_123"] }), (req) => ({ ok: true }));
 
 // Helpers
 app.get("/data", cache(60)(() => ({ time: Date.now() })));
@@ -256,10 +351,14 @@ app.get("/events", sse(), (req) => {
   setInterval(() => req.sseSend({ time: Date.now() }), 1000);
 });
 
-// Cron
+// ==========================================
+// CRON JOBS
+// ==========================================
 cron("*/1 * * * *", () => console.log("PrinceJS heartbeat"));
 
-// OpenAPI + Scalar docs
+// ==========================================
+// OPENAPI + SCALAR DOCS
+// ==========================================
 const api = app.openapi({ title: "PrinceJS App", version: "1.0.0" }, "/docs");
 api.route("GET", "/items", {
   summary: "List items",
