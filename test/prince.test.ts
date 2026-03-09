@@ -1308,6 +1308,181 @@ describe("Response Builder", () => {
 });
 
 // ==========================================
+// COOKIE TESTS
+// ==========================================
+
+describe("Cookies", () => {
+  test("Cookies are parsed from request", async () => {
+    const app = prince();
+    app.get("/profile", (req) => ({ cookie: req.cookies?.sessionId }));
+
+    const res = await app.fetch(
+      new Request("http://localhost/profile", {
+        headers: { "Cookie": "sessionId=abc123; theme=dark" }
+      })
+    );
+    const data = await res.json();
+
+    expect(data.cookie).toBe("abc123");
+  });
+
+  test("Multiple cookies are parsed correctly", async () => {
+    const app = prince();
+    app.get("/info", (req) => ({ cookies: req.cookies }));
+
+    const res = await app.fetch(
+      new Request("http://localhost/info", {
+        headers: { "Cookie": "userId=42; role=admin; lang=en" }
+      })
+    );
+    const data = await res.json();
+
+    expect(data.cookies.userId).toBe("42");
+    expect(data.cookies.role).toBe("admin");
+    expect(data.cookies.lang).toBe("en");
+  });
+
+  test("Cookie values with special characters are decoded", async () => {
+    const app = prince();
+    app.get("/decode", (req) => ({ name: req.cookies?.name }));
+
+    const res = await app.fetch(
+      new Request("http://localhost/decode", {
+        headers: { "Cookie": "name=John%20Doe%26Co" }
+      })
+    );
+    const data = await res.json();
+
+    expect(data.name).toBe("John Doe&Co");
+  });
+
+  test("Empty cookies object when no cookies present", async () => {
+    const app = prince();
+    app.get("/empty", (req) => ({ hasCookies: Object.keys(req.cookies || {}).length > 0 }));
+
+    const res = await app.fetch(new Request("http://localhost/empty"));
+    const data = await res.json();
+
+    expect(data.hasCookies).toBe(false);
+  });
+
+  test("response.cookie() sets a cookie", async () => {
+    const app = prince();
+    app.get("/set-cookie", (req) => 
+      app.response().json({ ok: true }).cookie("sessionId", "xyz789")
+    );
+
+    const res = await app.fetch(new Request("http://localhost/set-cookie"));
+
+    expect(res.headers.get("Set-Cookie")).toContain("sessionId=xyz789");
+  });
+
+  test("response.cookie() with options", async () => {
+    const app = prince();
+    app.get("/secure-cookie", (req) => 
+      app.response().json({ ok: true }).cookie("token", "secret", {
+        maxAge: 3600,
+        path: "/api",
+        secure: true,
+        httpOnly: true,
+        sameSite: "Strict"
+      })
+    );
+
+    const res = await app.fetch(new Request("http://localhost/secure-cookie"));
+    const setCookie = res.headers.get("Set-Cookie");
+
+    expect(setCookie).toContain("token=secret");
+    expect(setCookie).toContain("Max-Age=3600");
+    expect(setCookie).toContain("Path=/api");
+    expect(setCookie).toContain("Secure");
+    expect(setCookie).toContain("HttpOnly");
+    expect(setCookie).toContain("SameSite=Strict");
+  });
+
+  test("response.cookie() with domain option", async () => {
+    const app = prince();
+    app.get("/domain-cookie", (req) => 
+      app.response().json({ ok: true }).cookie("tracking", "id123", {
+        domain: ".example.com"
+      })
+    );
+
+    const res = await app.fetch(new Request("http://localhost/domain-cookie"));
+    const setCookie = res.headers.get("Set-Cookie");
+
+    expect(setCookie).toContain("Domain=.example.com");
+  });
+
+  test("response.cookie() can set multiple cookies", async () => {
+    const app = prince();
+    app.get("/multi-cookie", (req) => 
+      app.response()
+        .json({ ok: true })
+        .cookie("cookie1", "val1")
+        .cookie("cookie2", "val2")
+        .cookie("cookie3", "val3")
+    );
+
+    const res = await app.fetch(new Request("http://localhost/multi-cookie"));
+    const setCookie = res.headers.get("Set-Cookie");
+
+    expect(setCookie).toContain("cookie1=val1");
+    expect(setCookie).toContain("cookie2=val2");
+    expect(setCookie).toContain("cookie3=val3");
+  });
+
+  test("Cookie names and values with special characters are encoded", async () => {
+    const app = prince();
+    app.get("/encoded", (req) => 
+      app.response().json({ ok: true }).cookie("user name", "test value")
+    );
+
+    const res = await app.fetch(new Request("http://localhost/encoded"));
+    const setCookie = res.headers.get("Set-Cookie");
+
+    expect(setCookie).toContain("user%20name=test%20value");
+  });
+
+  test("Cookies persist across handler and response builder", async () => {
+    const app = prince();
+    app.get("/persist", (req) => {
+      const sessionId = req.cookies?.sessionId || "new";
+      return app.response()
+        .status(200)
+        .json({ sessionId })
+        .cookie("sessionId", sessionId, { maxAge: 7200 });
+    });
+
+    const res = await app.fetch(
+      new Request("http://localhost/persist", {
+        headers: { "Cookie": "sessionId=existing123" }
+      })
+    );
+    const data = await res.json();
+
+    expect(data.sessionId).toBe("existing123");
+    expect(res.headers.get("Set-Cookie")).toContain("sessionId=existing123");
+  });
+
+  test("Cookie sameSite options work", async () => {
+    const app = prince();
+    app.get("/lax", (req) => 
+      app.response().json({ ok: true }).cookie("test", "val", { sameSite: "Lax" })
+    );
+    app.get("/none", (req) => 
+      app.response().json({ ok: true }).cookie("test", "val", { sameSite: "None" })
+    );
+
+    const resLax = await app.fetch(new Request("http://localhost/lax"));
+    const resNone = await app.fetch(new Request("http://localhost/none"));
+
+    expect(resLax.headers.get("Set-Cookie")).toContain("SameSite=Lax");
+    expect(resNone.headers.get("Set-Cookie")).toContain("SameSite=None");
+  });
+});
+
+// ==========================================
 // ERROR HANDLING TESTS (Existing)
 // ==========================================
 

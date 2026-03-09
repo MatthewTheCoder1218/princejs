@@ -18,6 +18,7 @@ export interface PrinceRequest extends Request {
   session?: any;
   apiKey?: string;
   sseSend?: (data: any, event?: string, id?: string) => void;
+  cookies?: Record<string, string>;
   [key: string]: any;
 }
 
@@ -78,30 +79,54 @@ class ResponseBuilder {
   json(data: any) {
     this._headers["Content-Type"] = "application/json";
     this._body = JSON.stringify(data);
-    return this.build();
+    return this;
   }
 
   text(data: string) {
     this._headers["Content-Type"] = "text/plain";
     this._body = data;
-    return this.build();
+    return this;
   }
 
   html(data: string) {
     this._headers["Content-Type"] = "text/html";
     this._body = data;
-    return this.build();
+    return this;
   }
 
   redirect(url: string, status = 302) {
     this._status = status;
     this._headers["Location"] = url;
-    return this.build();
+    return this;
+  }
+
+  cookie(name: string, value: string, options?: { maxAge?: number; path?: string; domain?: string; secure?: boolean; httpOnly?: boolean; sameSite?: "Strict" | "Lax" | "None" }) {
+    let cookieStr = `${encodeURIComponent(name)}=${encodeURIComponent(value)}`;
+    if (options?.maxAge) cookieStr += `; Max-Age=${options.maxAge}`;
+    if (options?.path) cookieStr += `; Path=${options.path}`;
+    if (options?.domain) cookieStr += `; Domain=${options.domain}`;
+    if (options?.secure) cookieStr += "; Secure";
+    if (options?.httpOnly) cookieStr += "; HttpOnly";
+    if (options?.sameSite) cookieStr += `; SameSite=${options.sameSite}`;
+    const existing = this._headers["Set-Cookie"];
+    this._headers["Set-Cookie"] = existing ? `${existing}, ${cookieStr}` : cookieStr;
+    return this;
   }
 
   build() {
     return new Response(this._body, { status: this._status, headers: this._headers });
   }
+}
+
+// ─── Cookie helpers ────────────────────────────────────────────────────────
+function parseCookies(cookieHeader: string): Record<string, string> {
+  const cookies: Record<string, string> = {};
+  if (!cookieHeader) return cookies;
+  cookieHeader.split(";").forEach((pair) => {
+    const [name, ...value] = pair.split("=");
+    if (name) cookies[decodeURIComponent(name.trim())] = decodeURIComponent((value.join("=") || "").trim());
+  });
+  return cookies;
 }
 
 // ─── Zod → JSON Schema converter ────────────────────────────────────────────
@@ -675,6 +700,10 @@ export class Prince {
   ): Promise<Response> {
     Object.defineProperty(req, 'params', { value: params, writable: true, configurable: true });
     Object.defineProperty(req, 'query', { value: query, writable: true, configurable: true });
+    
+    // Parse cookies from request headers
+    const cookieHeader = req.headers.get("cookie") || "";
+    Object.defineProperty(req, 'cookies', { value: parseCookies(cookieHeader), writable: true, configurable: true });
 
     // Only parse body if it hasn't been parsed by middleware already
     if (["POST", "PUT", "PATCH"].includes(req.method) && !req.parsedBody) {
@@ -714,6 +743,7 @@ export class Prince {
 
       const res = await handler(req);
       if (res instanceof Response) return res;
+      if (res instanceof ResponseBuilder) return res.build();
       if (typeof res === "string") return new Response(res);
       if (res instanceof Uint8Array) return new Response(res);
       return this.json(res);
