@@ -63,6 +63,7 @@ app.listen(3000);
 | Routing | `princejs` |
 | Middleware (CORS, Logger, Rate Limit, Auth, JWT) | `princejs/middleware` |
 | Zod Validation | `princejs/middleware` |
+| **Cookies & IP Detection** | `princejs` |
 | File Uploads | `princejs/helpers` |
 | WebSockets | `princejs` |
 | Server-Sent Events | `princejs/helpers` |
@@ -77,6 +78,91 @@ app.listen(3000);
 | End-to-End Type Safety | `princejs/client` |
 | Deploy Adapters | `princejs/vercel` · `princejs/cloudflare` · `princejs/deno` · `princejs/node` |
 | Lifecycle Hooks | `princejs` | 
+
+---
+
+## 🍪 Cookies & 🌐 IP Detection
+
+### Reading Cookies
+
+Cookies are automatically parsed from the request:
+
+```ts
+app.get("/profile", (req) => ({
+  sessionId: req.cookies?.sessionId,
+  theme: req.cookies?.theme,
+  allCookies: req.cookies // Record<string, string>
+}));
+```
+
+### Setting Cookies
+
+Use the response builder to set cookies with full control:
+
+```ts
+app.get("/login", (req) => 
+  app.response()
+    .status(200)
+    .json({ ok: true })
+    .cookie("sessionId", "abc123", {
+      maxAge: 3600,        // 1 hour
+      path: "/",
+      httpOnly: true,      // not accessible from JS
+      secure: true,        // HTTPS only
+      sameSite: "Strict"   // CSRF protection
+    })
+);
+
+// Chain multiple cookies
+app.response()
+  .json({ ok: true })
+  .cookie("session", "xyz")
+  .cookie("theme", "dark")
+  .cookie("lang", "en");
+```
+
+### Client IP Detection
+
+Automatically detect client IP from request headers:
+
+```ts
+app.get("/api/data", (req) => ({
+  clientIp: req.ip,
+  data: [...]
+}));
+```
+
+**Supported headers** (in priority order):
+- `X-Forwarded-For` — Load balancers, proxies (first IP in list)
+- `X-Real-IP` — Nginx, Apache reverse proxy
+- `CF-Connecting-IP` — Cloudflare
+- `X-Client-IP` — Other proxy services
+- Fallback — `127.0.0.1` (localhost)
+
+**Use cases:**
+- 🔒 Rate limiting per IP
+- 📊 Geolocation analytics
+- 🚨 IP-based access control
+- 👥 User tracking & fraud detection
+
+```ts
+// Rate limit by IP
+app.use((req, next) => {
+  const ip = req.ip;
+  const count = ipTracker.getCount(ip) || 0;
+  if (count > 100) return new Response("Too many requests", { status: 429 });
+  ipTracker.increment(ip);
+  return next();
+});
+
+// IP-based security
+app.post("/admin", (req) => {
+  if (!ALLOWED_IPS.includes(req.ip!)) {
+    return new Response("Forbidden", { status: 403 });
+  }
+  return { authorized: true };
+});
+```
 
 ---
 
@@ -329,6 +415,23 @@ app.use(compress());
 // JSX
 const Page = () => Html(Head("Test Page"), Body(H1("Hello World"), P("This is a test")));
 app.get("/jsx", () => render(Page()));
+
+// Cookies & IP Detection
+app.post("/login", (req) => 
+  app.response()
+    .json({ ok: true, ip: req.ip })
+    .cookie("sessionId", "user_123", { 
+      httpOnly: true, 
+      secure: true,
+      sameSite: "Strict",
+      maxAge: 86400 // 24 hours
+    })
+);
+
+app.get("/profile", (req) => ({
+  sessionId: req.cookies?.sessionId,
+  clientIp: req.ip,
+}));
 
 // Database
 const users = db.sqlite("./db.sqlite", "CREATE TABLE users...");
