@@ -19,6 +19,7 @@ export interface PrinceRequest extends Request {
   apiKey?: string;
   sseSend?: (data: any, event?: string, id?: string) => void;
   cookies?: Record<string, string>;
+  ip?: string;
   [key: string]: any;
 }
 
@@ -127,6 +128,28 @@ function parseCookies(cookieHeader: string): Record<string, string> {
     if (name) cookies[decodeURIComponent(name.trim())] = decodeURIComponent((value.join("=") || "").trim());
   });
   return cookies;
+}
+
+// ─── IP detection helpers ──────────────────────────────────────────────────
+function detectIP(req: Request): string {
+  // Check X-Forwarded-For (first IP, may contain multiple comma-separated IPs)
+  const forwarded = req.headers.get("x-forwarded-for");
+  if (forwarded) return forwarded.split(",")[0].trim();
+  
+  // Check X-Real-IP (often used by proxies like Nginx)
+  const realIp = req.headers.get("x-real-ip");
+  if (realIp) return realIp;
+  
+  // Check Cloudflare
+  const cfIp = req.headers.get("cf-connecting-ip");
+  if (cfIp) return cfIp;
+  
+  // Check other common headers
+  const clientIp = req.headers.get("x-client-ip");
+  if (clientIp) return clientIp;
+  
+  // Fallback to 127.0.0.1 for localhost
+  return "127.0.0.1";
 }
 
 // ─── Zod → JSON Schema converter ────────────────────────────────────────────
@@ -704,6 +727,9 @@ export class Prince {
     // Parse cookies from request headers
     const cookieHeader = req.headers.get("cookie") || "";
     Object.defineProperty(req, 'cookies', { value: parseCookies(cookieHeader), writable: true, configurable: true });
+    
+    // Detect client IP
+    Object.defineProperty(req, 'ip', { value: detectIP(req), writable: true, configurable: true });
 
     // Only parse body if it hasn't been parsed by middleware already
     if (["POST", "PUT", "PATCH"].includes(req.method) && !req.parsedBody) {

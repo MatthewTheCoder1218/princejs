@@ -1483,6 +1483,200 @@ describe("Cookies", () => {
 });
 
 // ==========================================
+// IP DETECTION TESTS
+// ==========================================
+
+describe("IP Detection", () => {
+  test("Detects IP from x-forwarded-for header", async () => {
+    const app = prince();
+    app.get("/ip", (req) => ({ ip: req.ip }));
+
+    const res = await app.fetch(
+      new Request("http://localhost/ip", {
+        headers: { "x-forwarded-for": "192.168.1.100" }
+      })
+    );
+    const data = await res.json();
+
+    expect(data.ip).toBe("192.168.1.100");
+  });
+
+  test("Detects first IP from multiple x-forwarded-for IPs", async () => {
+    const app = prince();
+    app.get("/ip", (req) => ({ ip: req.ip }));
+
+    const res = await app.fetch(
+      new Request("http://localhost/ip", {
+        headers: { "x-forwarded-for": "203.0.113.1, 198.51.100.2, 192.0.2.3" }
+      })
+    );
+    const data = await res.json();
+
+    expect(data.ip).toBe("203.0.113.1");
+  });
+
+  test("Detects IP from x-real-ip header", async () => {
+    const app = prince();
+    app.get("/ip", (req) => ({ ip: req.ip }));
+
+    const res = await app.fetch(
+      new Request("http://localhost/ip", {
+        headers: { "x-real-ip": "10.0.0.50" }
+      })
+    );
+    const data = await res.json();
+
+    expect(data.ip).toBe("10.0.0.50");
+  });
+
+  test("x-forwarded-for takes precedence over x-real-ip", async () => {
+    const app = prince();
+    app.get("/ip", (req) => ({ ip: req.ip }));
+
+    const res = await app.fetch(
+      new Request("http://localhost/ip", {
+        headers: { 
+          "x-forwarded-for": "203.0.113.99",
+          "x-real-ip": "10.0.0.50"
+        }
+      })
+    );
+    const data = await res.json();
+
+    expect(data.ip).toBe("203.0.113.99");
+  });
+
+  test("Detects IP from cf-connecting-ip (Cloudflare)", async () => {
+    const app = prince();
+    app.get("/ip", (req) => ({ ip: req.ip }));
+
+    const res = await app.fetch(
+      new Request("http://localhost/ip", {
+        headers: { "cf-connecting-ip": "198.51.100.42" }
+      })
+    );
+    const data = await res.json();
+
+    expect(data.ip).toBe("198.51.100.42");
+  });
+
+  test("Detects IP from x-client-ip header", async () => {
+    const app = prince();
+    app.get("/ip", (req) => ({ ip: req.ip }));
+
+    const res = await app.fetch(
+      new Request("http://localhost/ip", {
+        headers: { "x-client-ip": "172.16.0.1" }
+      })
+    );
+    const data = await res.json();
+
+    expect(data.ip).toBe("172.16.0.1");
+  });
+
+  test("Defaults to 127.0.0.1 when no IP headers present", async () => {
+    const app = prince();
+    app.get("/ip", (req) => ({ ip: req.ip }));
+
+    const res = await app.fetch(new Request("http://localhost/ip"));
+    const data = await res.json();
+
+    expect(data.ip).toBe("127.0.0.1");
+  });
+
+  test("IP is available on all request methods", async () => {
+    const app = prince();
+    app.post("/ip", (req) => ({ ip: req.ip }));
+    app.put("/ip", (req) => ({ ip: req.ip }));
+    app.delete("/ip", (req) => ({ ip: req.ip }));
+
+    const postRes = await app.fetch(
+      new Request("http://localhost/ip", {
+        method: "POST",
+        headers: { "x-real-ip": "192.168.1.1" }
+      })
+    );
+    const postData = await postRes.json();
+    expect(postData.ip).toBe("192.168.1.1");
+
+    const putRes = await app.fetch(
+      new Request("http://localhost/ip", {
+        method: "PUT",
+        headers: { "x-real-ip": "192.168.1.2" }
+      })
+    );
+    const putData = await putRes.json();
+    expect(putData.ip).toBe("192.168.1.2");
+
+    const delRes = await app.fetch(
+      new Request("http://localhost/ip", {
+        method: "DELETE",
+        headers: { "x-real-ip": "192.168.1.3" }
+      })
+    );
+    const delData = await delRes.json();
+    expect(delData.ip).toBe("192.168.1.3");
+  });
+
+  test("IP header detection order respected", async () => {
+    const app = prince();
+    app.get("/ip", (req) => ({ ip: req.ip }));
+
+    // When multiple headers present, highest priority wins
+    const res = await app.fetch(
+      new Request("http://localhost/ip", {
+        headers: { 
+          "x-client-ip": "172.16.0.1",
+          "cf-connecting-ip": "198.51.100.42",
+          "x-real-ip": "10.0.0.50",
+          "x-forwarded-for": "203.0.113.1"
+        }
+      })
+    );
+    const data = await res.json();
+
+    // x-forwarded-for has highest priority
+    expect(data.ip).toBe("203.0.113.1");
+  });
+
+  test("IP with whitespace is trimmed", async () => {
+    const app = prince();
+    app.get("/ip", (req) => ({ ip: req.ip }));
+
+    const res = await app.fetch(
+      new Request("http://localhost/ip", {
+        headers: { "x-forwarded-for": "  203.0.113.1  ,  198.51.100.2  " }
+      })
+    );
+    const data = await res.json();
+
+    expect(data.ip).toBe("203.0.113.1");
+  });
+
+  test("IP persists through middleware and handlers", async () => {
+    const app = prince();
+    let capturedIp: string | undefined;
+
+    app.use((req, next) => {
+      capturedIp = req.ip;
+      return next();
+    });
+
+    app.get("/ip", (req) => ({ ip: req.ip, same: req.ip === capturedIp }));
+
+    const res = await app.fetch(
+      new Request("http://localhost/ip", {
+        headers: { "x-real-ip": "192.168.1.100" }
+      })
+    );
+    const data = await res.json();
+
+    expect(data.ip).toBe("192.168.1.100");
+    expect(data.same).toBe(true);
+  });
+});
+
+// ==========================================
 // ERROR HANDLING TESTS (Existing)
 // ==========================================
 
