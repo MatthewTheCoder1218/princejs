@@ -563,22 +563,6 @@ export class Prince {
       return result;
     }
 
-    // Check if path exists for 405 errors
-    const allowedMethods = new Set<string>();
-    let pathExists = false;
-    
-    for (const route of this.rawRoutes) {
-      if (this.matchPath(route.path, pathname)) {
-        pathExists = true;
-        allowedMethods.add(route.method);
-      }
-    }
-
-    if (!pathExists) {
-      this.routeCache.set(cacheKey, null!);
-      return null;
-    }
-
     // Radix tree lookup
     const segments = pathname === "/" ? [""] : pathname.split("/").slice(1);
     const result = this.matchRoute(this.buildRouter(), segments, method);
@@ -588,8 +572,15 @@ export class Prince {
       return result;
     }
 
-    // Method not allowed
-    if (pathExists) {
+    // Check for 405 by looking for other methods at this path
+    const allowedMethods = new Set<string>();
+    for (const route of this.rawRoutes) {
+      if (this.matchPath(route.path, pathname)) {
+        allowedMethods.add(route.method);
+      }
+    }
+
+    if (allowedMethods.size > 0) {
       const methodNotAllowed = { 
         handler: null as any, 
         params: {},
@@ -721,34 +712,23 @@ export class Prince {
     method: string,
     pathname: string
   ): Promise<Response> {
-    Object.defineProperty(req, 'params', { value: params, writable: true, configurable: true });
-    Object.defineProperty(req, 'query', { value: query, writable: true, configurable: true });
-    
-    // Parse cookies from request headers
-    const cookieHeader = req.headers.get("cookie") || "";
-    Object.defineProperty(req, 'cookies', { value: parseCookies(cookieHeader), writable: true, configurable: true });
-    
-    // Detect client IP
-    Object.defineProperty(req, 'ip', { value: detectIP(req), writable: true, configurable: true });
+    req.params = params;
+    req.query = query;
+    req.cookies = parseCookies(req.headers.get("cookie") || "");
+    req.ip = detectIP(req);
 
     // Only parse body if it hasn't been parsed by middleware already
     if (["POST", "PUT", "PATCH"].includes(req.method) && !req.parsedBody) {
       const parsed = await this.parseBody(req);
       if (parsed) {
         if (typeof parsed === "object" && "files" in parsed && "fields" in parsed) {
-          Object.defineProperty(req, 'parsedBody', { value: parsed.fields, writable: true, configurable: true });
-          Object.defineProperty(req, 'files', { value: parsed.files, writable: true, configurable: true });
+          req.parsedBody = parsed.fields;
+          req.files = parsed.files;
         } else {
-          Object.defineProperty(req, 'parsedBody', { value: parsed, writable: true, configurable: true });
+          req.parsedBody = parsed;
         }
       }
     }
-
-    Object.defineProperty(req, 'body', { 
-      get: () => req.parsedBody,
-      set: (value) => { req.parsedBody = value; },
-      configurable: true 
-    });
 
     // Call onBeforeHandle hooks
     for (const hook of this.onBeforeHandleHooks) {
