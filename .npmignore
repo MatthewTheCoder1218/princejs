@@ -1,0 +1,26 @@
+# Source files
+src/
+*.ts
+*.jsx
+
+# Test files
+test/
+spec/
+**/*.test.js
+**/*.spec.js
+
+# Build tools and Configs
+gulpfile.js
+webpack.config.js
+.babelrc
+.eslintrc
+.prettierrc
+.editorconfig
+
+# Documentation
+docs/
+examples/
+
+# Other
+.github/
+coverage/
