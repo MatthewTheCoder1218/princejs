@@ -8,6 +8,8 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
     
     steps:
       - uses: actions/checkout@v4
@@ -25,12 +27,8 @@ jobs:
       - name: Build
         run: bun run build
       
-      - name: Setup npmrc
-        run: |
-          echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" > ~/.npmrc
-      
       - name: Publish to npm
-        run: npm publish
+        run: npm publish --provenance
       
       - name: Create GitHub Release
         uses: actions/create-release@v1
