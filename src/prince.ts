@@ -794,6 +794,19 @@ export class Prince {
       configurable: true,
     });
 
+    // Only parse body if it hasn't been parsed by middleware already
+    if (["POST", "PUT", "PATCH"].includes(req.method) && !req.parsedBody) {
+      const parsed = await this.parseBody(req);
+      if (parsed) {
+        if (typeof parsed === "object" && "files" in parsed && "fields" in parsed) {
+          req.parsedBody = parsed.fields;
+          req.files = parsed.files;
+        } else {
+          req.parsedBody = parsed;
+        }
+      }
+    }
+
     // Call onBeforeHandle hooks
     for (const hook of this.onBeforeHandleHooks) {
       await hook(req, pathname, method);
@@ -807,16 +820,6 @@ export class Prince {
       while (i < allMiddlewares.length) {
         const result = await allMiddlewares[i++](req, next);
         if (result instanceof Response) return result;
-      }
-
-      // Parse body here — after all middleware has run — so middleware like
-      // validate() can read/clone the raw stream first without it being consumed.
-      // If middleware already set req.parsedBody (e.g. validate), skip parsing.
-      if (["POST", "PUT", "PATCH"].includes(req.method) && !req.parsedBody) {
-        const parsed = await this.parseBody(req);
-        if (parsed !== null) {
-          req.parsedBody = parsed;
-        }
       }
 
       const res = await handler(req);
