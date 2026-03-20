@@ -50,6 +50,10 @@ interface RadixNode {
   pattern: string;
   handlers: Record<string, RouteHandler>;
   middlewares: Record<string, Middleware[]>;
+  // Pre-composed: global middlewares + route middlewares merged at registration time
+  composedMiddlewares: Record<string, Middleware[]>;
+  // All methods registered at this node — used for 405 detection without a scan
+  allowedMethods: Set<string>;
   children: RadixNode[];
   paramName?: string;
   isWildcard?: boolean;
@@ -123,33 +127,60 @@ class ResponseBuilder {
 function parseCookies(cookieHeader: string): Record<string, string> {
   const cookies: Record<string, string> = {};
   if (!cookieHeader) return cookies;
-  cookieHeader.split(";").forEach((pair) => {
-    const [name, ...value] = pair.split("=");
-    if (name) cookies[decodeURIComponent(name.trim())] = decodeURIComponent((value.join("=") || "").trim());
-  });
+  const len = cookieHeader.length;
+  let i = 0;
+  while (i < len) {
+    // skip leading spaces
+    while (i < len && cookieHeader.charCodeAt(i) === 32) i++;
+    const eqIdx = cookieHeader.indexOf("=", i);
+    if (eqIdx === -1) break;
+    const semIdx = cookieHeader.indexOf(";", eqIdx);
+    const end = semIdx === -1 ? len : semIdx;
+    const name = cookieHeader.slice(i, eqIdx).trimEnd();
+    const val  = cookieHeader.slice(eqIdx + 1, end).trim();
+    if (name) {
+      try {
+        cookies[decodeURIComponent(name)] = decodeURIComponent(val);
+      } catch {
+        cookies[name] = val;
+      }
+    }
+    i = end + 1;
+  }
   return cookies;
 }
 
-// ─── IP detection helpers ──────────────────────────────────────────────────
+// ─── Fast pathname extraction ──────────────────────────────────────────────
+// Avoids allocating a full URL object on every request.
+// Bun's req.url is always an absolute URL like "http://host/path?query"
+// We find the third "/" (end of "http://host") then slice to "?" or end.
+function extractPathname(url: string): string {
+  // Skip "http://" or "https://"
+  const slashSlash = url.indexOf("//");
+  if (slashSlash === -1) return "/";
+  const pathStart = url.indexOf("/", slashSlash + 2);
+  if (pathStart === -1) return "/";
+  const qIdx = url.indexOf("?", pathStart);
+  return qIdx === -1 ? url.slice(pathStart) : url.slice(pathStart, qIdx);
+}
+
+// Extract raw query string without allocating URLSearchParams eagerly
+function extractSearch(url: string): string {
+  const qIdx = url.indexOf("?");
+  return qIdx === -1 ? "" : url.slice(qIdx + 1);
+}
+
+// ─── IP detection ──────────────────────────────────────────────────────────
 function detectIP(req: Request): string {
-  // Check X-Forwarded-For (first IP, may contain multiple comma-separated IPs)
   const forwarded = req.headers.get("x-forwarded-for");
-  if (forwarded) return forwarded.split(",")[0].trim();
-  
-  // Check X-Real-IP (often used by proxies like Nginx)
-  const realIp = req.headers.get("x-real-ip");
-  if (realIp) return realIp;
-  
-  // Check Cloudflare
-  const cfIp = req.headers.get("cf-connecting-ip");
-  if (cfIp) return cfIp;
-  
-  // Check other common headers
-  const clientIp = req.headers.get("x-client-ip");
-  if (clientIp) return clientIp;
-  
-  // Fallback to 127.0.0.1 for localhost
-  return "127.0.0.1";
+  if (forwarded) {
+    const comma = forwarded.indexOf(",");
+    return comma === -1 ? forwarded.trim() : forwarded.slice(0, comma).trim();
+  }
+  return req.headers.get("x-real-ip")
+    ?? req.headers.get("cf-connecting-ip")
+    ?? req.headers.get("x-client-ip")
+    ?? "127.0.0.1";
 }
 
 // ─── Zod → JSON Schema converter ────────────────────────────────────────────
@@ -360,6 +391,8 @@ export class Prince {
   private router: RadixNode | null = null;
   private staticRoutes: Map<string, RouteHandler> = new Map();
   private staticMiddlewares: Map<string, Middleware[]> = new Map();
+  // Pre-composed [globalMiddlewares..., routeMiddlewares...] stored at registration time
+  private staticComposed: Map<string, Middleware[]> = new Map();
   private routeCache = new Map<string, { 
     handler: RouteHandler; 
     params: Record<string, string>;
@@ -377,6 +410,10 @@ export class Prince {
 
   use(mw: Middleware) {
     this.middlewares.push(mw);
+    // Invalidate caches — lazy composition in findRoute/matchRoute must pick up the new global
+    this.routeCache.clear();
+    this.staticComposed.clear();
+    this.router = null; // force trie rebuild so composedMiddlewares are re-baked at listen()
     return this;
   }
 
@@ -482,6 +519,8 @@ export class Prince {
       pattern: '',
       handlers: {},
       middlewares: {},
+      composedMiddlewares: {},
+      allowedMethods: new Set(),
       children: []
     };
 
@@ -516,6 +555,8 @@ export class Prince {
           pattern: part,
           handlers: {},
           middlewares: {},
+          composedMiddlewares: {},
+          allowedMethods: new Set(),
           children: []
         };
 
@@ -533,9 +574,22 @@ export class Prince {
     }
 
     currentNode.handlers[route.method] = route.handler;
+    currentNode.allowedMethods.add(route.method);
+    // Pre-compose: global middlewares are not yet known at build time for dynamic
+    // routes (they're composed in buildRouter after all routes are inserted).
+    // We store route-level middlewares here; final composition happens in
+    // composeRouterMiddlewares() called from listen().
     if (route.middlewares.length > 0) {
       currentNode.middlewares[route.method] = route.middlewares;
     }
+  }
+
+  // Compose [globals..., routeMW...] for a single method on demand.
+  // Used as fallback when composeRouterMiddlewares() has not been called (e.g. in tests).
+  private composeMW(routeMW: Middleware[]): Middleware[] {
+    if (this.middlewares.length === 0) return routeMW;
+    if (routeMW.length === 0) return this.middlewares;
+    return [...this.middlewares, ...routeMW];
   }
 
   private findRoute(method: string, pathname: string): { 
@@ -550,81 +604,80 @@ export class Prince {
       return this.routeCache.get(cacheKey)!;
     }
 
-    // Static route fast path
-    const staticKey = `${method}:${pathname}`;
-    const staticHandler = this.staticRoutes.get(staticKey);
+    // Static route fast path — O(1) map lookup
+    const staticHandler = this.staticRoutes.get(cacheKey);
     if (staticHandler) {
-      const result = { 
-        handler: staticHandler, 
-        params: {},
-        middlewares: this.staticMiddlewares.get(staticKey) || []
-      };
+      // Use pre-baked composed array if available (post-listen), otherwise compose now
+      const composed = this.staticComposed.get(cacheKey)
+        ?? this.composeMW(this.staticMiddlewares.get(cacheKey) ?? []);
+      const result = { handler: staticHandler, params: {}, middlewares: composed };
       this.routeCache.set(cacheKey, result);
       return result;
     }
 
-    // Radix tree lookup
+    // 405 check for static routes: another method exists at this exact path
+    if (this.staticRoutes.size > 0) {
+      const methods = ["GET","POST","PUT","PATCH","DELETE","OPTIONS"];
+      const allowed = methods.filter(m => m !== method && this.staticRoutes.has(`${m}:${pathname}`));
+      if (allowed.length > 0) {
+        const r = { handler: null as any, params: {}, middlewares: [], allowedMethods: allowed };
+        this.routeCache.set(cacheKey, r);
+        return r;
+      }
+    }
+
+    // Radix tree lookup — 405 detected inside matchRoute via allowedMethods
     const segments = pathname === "/" ? [""] : pathname.split("/").slice(1);
     const result = this.matchRoute(this.buildRouter(), segments, method);
     
-    if (result) {
-      this.routeCache.set(cacheKey, result);
-      return result;
-    }
-
-    // Check for 405 by looking for other methods at this path
-    const allowedMethods = new Set<string>();
-    for (const route of this.rawRoutes) {
-      if (this.matchPath(route.path, pathname)) {
-        allowedMethods.add(route.method);
-      }
-    }
-
-    if (allowedMethods.size > 0) {
-      const methodNotAllowed = { 
-        handler: null as any, 
-        params: {},
-        middlewares: [],
-        allowedMethods: Array.from(allowedMethods) 
-      };
-      this.routeCache.set(cacheKey, methodNotAllowed);
-      return methodNotAllowed;
-    }
-
-    this.routeCache.set(cacheKey, null!);
-    return null;
+    this.routeCache.set(cacheKey, result!);
+    return result;
   }
 
-  private matchPath(routePath: string, requestPath: string): boolean {
-    const routeParts = routePath === "/" ? [""] : routePath.split("/").slice(1);
-    const requestParts = requestPath === "/" ? [""] : requestPath.split("/").slice(1);
-    
-    if (routeParts.length !== requestParts.length) {
-      if (routeParts.includes('**')) return true;
-      return false;
+  // Walk the finished trie and bake composed middleware arrays into every node.
+  // Called once from listen() after all routes are registered.
+  private composeRouterMiddlewares(node: RadixNode) {
+    for (const method of Object.keys(node.handlers)) {
+      const routeMW = node.middlewares[method] ?? [];
+      node.composedMiddlewares[method] =
+        this.middlewares.length === 0 ? routeMW
+        : routeMW.length === 0 ? this.middlewares
+        : [...this.middlewares, ...routeMW];
     }
-
-    for (let i = 0; i < routeParts.length; i++) {
-      const routePart = routeParts[i];
-      const requestPart = requestParts[i];
-
-      if (routePart.startsWith(':') || routePart === '*' || routePart === '**') {
-        continue;
-      }
-      
-      if (routePart !== requestPart) {
-        return false;
-      }
+    for (const child of node.children) {
+      this.composeRouterMiddlewares(child);
     }
-
-    return true;
   }
 
-  private matchRoute(node: RadixNode, segments: string[], method: string, params: Record<string, string> = {}, index = 0): { handler: RouteHandler; params: Record<string, string>; middlewares: Middleware[] } | null {
+  // Same for static routes — compose once at listen() time.
+  private composeStaticMiddlewares() {
+    this.staticComposed.clear();
+    for (const [key, handler] of this.staticRoutes) {
+      const routeMW = this.staticMiddlewares.get(key) ?? [];
+      this.staticComposed.set(
+        key,
+        this.middlewares.length === 0 ? routeMW
+        : routeMW.length === 0 ? this.middlewares
+        : [...this.middlewares, ...routeMW]
+      );
+    }
+  }
+
+
+  private matchRoute(node: RadixNode, segments: string[], method: string, params: Record<string, string> = {}, index = 0): { handler: RouteHandler; params: Record<string, string>; middlewares: Middleware[]; allowedMethods?: string[] } | null {
     if (index === segments.length) {
       const handler = node.handlers[method];
-      const middlewares = node.middlewares[method] || [];
-      return handler ? { handler, params, middlewares } : null;
+      if (handler) {
+        // Use pre-baked composed array if available, else compose lazily
+        const middlewares = node.composedMiddlewares[method]
+          ?? this.composeMW(node.middlewares[method] ?? []);
+        return { handler, params, middlewares };
+      }
+      // Path matched but wrong method — surface allowed methods for 405
+      if (node.allowedMethods.size > 0) {
+        return { handler: null as any, params, middlewares: [], allowedMethods: [...node.allowedMethods] };
+      }
+      return null;
     }
 
     const segment = segments[index];
@@ -640,10 +693,12 @@ export class Prince {
 
     for (const child of node.children) {
       if (child.paramName) {
+        const saved = params[child.paramName];
         params[child.paramName] = segment;
         const result = this.matchRoute(child, segments, method, params, index + 1);
         if (result) return result;
-        delete params[child.paramName];
+        if (saved === undefined) delete params[child.paramName];
+        else params[child.paramName] = saved;
       }
     }
 
@@ -657,9 +712,13 @@ export class Prince {
     for (const child of node.children) {
       if (child.isCatchAll) {
         const handler = child.handlers[method];
-        const middlewares = child.middlewares[method] || [];
         if (handler) {
+          const middlewares = child.composedMiddlewares[method]
+            ?? this.composeMW(child.middlewares[method] ?? []);
           return { handler, params, middlewares };
+        }
+        if (child.allowedMethods.size > 0) {
+          return { handler: null as any, params, middlewares: [], allowedMethods: [...child.allowedMethods] };
         }
       }
     }
@@ -669,31 +728,26 @@ export class Prince {
 
   private async parseBody(req: Request): Promise<any> {
     const ct = req.headers.get("content-type") || "";
-    const clonedReq = req.clone();
     
     try {
       if (ct.includes("application/json")) {
-        return await clonedReq.json();
+        return await req.json();
       }
 
       if (ct.includes("application/x-www-form-urlencoded")) {
-        const text = await clonedReq.text();
+        const text = await req.text();
         return Object.fromEntries(new URLSearchParams(text));
       }
 
+      // Do NOT consume multipart/form-data here — handlers like upload()
+      // need to call req.formData() themselves on the unconsumed stream.
+      // executeHandler sets req.files/req.parsedBody only for json/urlencoded.
       if (ct.startsWith("multipart/form-data")) {
-        const fd = await clonedReq.formData();
-        const files: Record<string, File> = {};
-        const fields: Record<string, string> = {};
-        for (const [k, v] of fd.entries()) {
-          if (v instanceof File) files[k] = v;
-          else fields[k] = v as string;
-        }
-        return { files, fields };
+        return null;
       }
 
       if (ct.startsWith("text/")) {
-        return await clonedReq.text();
+        return await req.text();
       }
     } catch (error) {
       console.error("Body parsing error:", error);
@@ -707,44 +761,62 @@ export class Prince {
     req: PrinceRequest, 
     handler: RouteHandler, 
     params: Record<string, string>, 
-    query: URLSearchParams,
+    search: string,
     routeMiddlewares: Middleware[],
     method: string,
     pathname: string
   ): Promise<Response> {
     req.params = params;
-    req.query = query;
-    req.cookies = parseCookies(req.headers.get("cookie") || "");
-    req.ip = detectIP(req);
+    // Lazy URLSearchParams — only parsed if handler accesses req.query
+    let _query: URLSearchParams | undefined;
+    Object.defineProperty(req, "query", {
+      get() { return _query ??= new URLSearchParams(search); },
+      configurable: true,
+    });
 
-    // Only parse body if it hasn't been parsed by middleware already
-    if (["POST", "PUT", "PATCH"].includes(req.method) && !req.parsedBody) {
-      const parsed = await this.parseBody(req);
-      if (parsed) {
-        if (typeof parsed === "object" && "files" in parsed && "fields" in parsed) {
-          req.parsedBody = parsed.fields;
-          req.files = parsed.files;
-        } else {
-          req.parsedBody = parsed;
-        }
-      }
-    }
+    // Lazy cookies — only parsed if handler accesses req.cookies
+    Object.defineProperty(req, "cookies", {
+      get() {
+        const val = parseCookies(req.headers.get("cookie") ?? "");
+        Object.defineProperty(req, "cookies", { value: val, configurable: true });
+        return val;
+      },
+      configurable: true,
+    });
+
+    // Lazy IP — only resolved if handler accesses req.ip
+    Object.defineProperty(req, "ip", {
+      get() {
+        const val = detectIP(req);
+        Object.defineProperty(req, "ip", { value: val, configurable: true });
+        return val;
+      },
+      configurable: true,
+    });
 
     // Call onBeforeHandle hooks
     for (const hook of this.onBeforeHandleHooks) {
       await hook(req, pathname, method);
     }
 
-    // OPTIMIZED: Only create combined array if route has middleware
-    const allMiddlewares = routeMiddlewares.length > 0 
-      ? [...this.middlewares, ...routeMiddlewares]
-      : this.middlewares;
+    // routeMiddlewares is already composed ([globals..., routeMW...]) — no spread needed
+    const allMiddlewares = routeMiddlewares;
     
     let i = 0;
     const next = async (): Promise<Response> => {
       while (i < allMiddlewares.length) {
         const result = await allMiddlewares[i++](req, next);
         if (result instanceof Response) return result;
+      }
+
+      // Parse body here — after all middleware has run — so middleware like
+      // validate() can read/clone the raw stream first without it being consumed.
+      // If middleware already set req.parsedBody (e.g. validate), skip parsing.
+      if (["POST", "PUT", "PATCH"].includes(req.method) && !req.parsedBody) {
+        const parsed = await this.parseBody(req);
+        if (parsed !== null) {
+          req.parsedBody = parsed;
+        }
       }
 
       const res = await handler(req);
@@ -757,19 +829,21 @@ export class Prince {
 
     const response = await next();
 
-    // Call onAfterHandle hooks
-    for (const hook of this.onAfterHandleHooks) {
-      await hook(req, response.clone(), pathname, method);
+    // Call onAfterHandle hooks — only clone if there are hooks registered
+    if (this.onAfterHandleHooks.length > 0) {
+      for (const hook of this.onAfterHandleHooks) {
+        await hook(req, response, pathname, method);
+      }
     }
 
     return response;
   }
 
   async handleFetch(req: Request): Promise<Response> {
-    const url = new URL(req.url);
+    const rawUrl = req.url;
+    const pathname = extractPathname(rawUrl);
     const r = req as PrinceRequest;
     const method = req.method;
-    const pathname = url.pathname;
 
     // Call onRequest hooks
     for (const hook of this.onRequestHooks) {
@@ -795,17 +869,20 @@ export class Prince {
       );
     }
 
-    return this.executeHandler(r, routeMatch.handler, routeMatch.params, url.searchParams, routeMatch.middlewares, method, pathname);
+    // Pass raw search string — URLSearchParams only allocated if req.query is accessed
+    const search = extractSearch(rawUrl);
+    return this.executeHandler(r, routeMatch.handler, routeMatch.params, search, routeMatch.middlewares, method, pathname);
   }
 
   async fetch(req: Request): Promise<Response> {
-    const url = new URL(req.url);
-    const pathname = url.pathname;
+    // Extract pathname once for error handler fallback — no full URL parse needed
+    const rawUrl = req.url;
     const method = req.method;
-    
+
     try {
       return await this.handleFetch(req);
     } catch (err) {
+      const pathname = extractPathname(rawUrl);
       // Call onError hooks
       for (const hook of this.onErrorHooks) {
         await hook(err, req as PrinceRequest, pathname, method);
@@ -938,14 +1015,20 @@ export class Prince {
 
   listen(port = 3000) {
     const self = this;
+
+    // ── Pre-compile everything at startup so the hot path is allocation-free ──
+    const router = this.buildRouter();
+    this.composeRouterMiddlewares(router);
+    this.composeStaticMiddlewares();
     
     Bun.serve({
       port,
       fetch: (req, server) => {
-        const url = new URL(req.url);
-        
-        if (self.wsRoutes[url.pathname] && server.upgrade(req, {
-          data: { path: url.pathname }
+        // Use fast path extract — avoids new URL() for the WS check
+        const pathname = extractPathname(req.url);
+
+        if (self.wsRoutes[pathname] && server.upgrade(req, {
+          data: { path: pathname }
         })) {
           return;
         }

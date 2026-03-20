@@ -1927,6 +1927,8 @@ describe("Integration - Full Stack", () => {
         body: JSON.stringify({ title: "Test Task" })
       })
     );
+    const res1Body = await res1.clone().text();
+    console.error("POST /tasks status:", res1.status, "body:", res1Body);
     expect(res1.status).toBe(200);
 
     // Get tasks
@@ -1935,6 +1937,8 @@ describe("Integration - Full Stack", () => {
         headers: { "Authorization": `Bearer ${token}` }
       })
     );
+    const res2Body = await res2.clone().text();
+    console.error("GET /tasks status:", res2.status, "body:", res2Body);
     const data = await res2.json();
     expect(data.tasks.length).toBe(1);
     expect(data.tasks[0].title).toBe("Test Task");
