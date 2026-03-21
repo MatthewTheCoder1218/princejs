@@ -20,23 +20,24 @@ Built by a 13-year-old Nigerian developer. Among the top three in performance.
 
 Benchmarked with `oha -c 100 -z 30s` on Windows 10:
 
-| Framework | Req/s | Total |
-|-----------|------:|------:|
-| Elysia | 25,312 | 759k |
-| Hono | 22,124 | 664k |
-| **PrinceJS** | **21,748** | **653k** |
-| Express | 9,325 | 280k |
+| Framework | Avg Req/s | Peak Req/s |
+|-----------|----------:|-----------:|
+| Elysia | 27,606 | 27,834 |
+| **PrinceJS** | **17,985** | **18,507** |
+| Hono | 17,914 | 18,826 |
+| Fastify | 15,519 | 16,434 |
+| Express | 13,138 | 13,458 |
 
-> PrinceJS is **2.3× faster than Express** and sits comfortably in the top 3 — at just **4.4kB gzipped**.
+> PrinceJS is **2.3× faster than Express**, matches Hono head-to-head, and sits at just **5.1kB gzipped** — loads in ~101ms on a slow 3G connection.
 
 ---
 
 ## 🚀 Quick Start
 
 ```bash
-npm install princejs
 bun add princejs
-yarn add princejs
+# or
+npm install princejs
 ```
 
 ```ts
@@ -49,7 +50,7 @@ app.use(cors());
 app.use(logger());
 
 app.get("/", () => ({ message: "Hello PrinceJS!" }));
-app.get("/users/:id", (req) => ({ id: req.params.id }));
+app.get("/users/:id", (req) => ({ id: req.params?.id }));
 
 app.listen(3000);
 ```
@@ -60,24 +61,17 @@ app.listen(3000);
 
 | Feature | Import |
 |---------|--------|
-| Routing | `princejs` |
-| Middleware (CORS, Logger, Rate Limit, Auth, JWT) | `princejs/middleware` |
-| Zod Validation | `princejs/middleware` |
-| **Cookies & IP Detection** | `princejs` |
-| File Uploads | `princejs/helpers` |
-| WebSockets | `princejs` |
-| Server-Sent Events | `princejs/helpers` |
-| Sessions | `princejs/middleware` |
-| Response Compression | `princejs/middleware` |
-| In-memory Cache | `princejs/helpers` |
+| Routing, WebSockets, OpenAPI, Plugins, Lifecycle Hooks, Cookies, IP | `princejs` |
+| CORS, Logger, JWT, Auth, Rate Limit, Validate, Compress, Session, API Key | `princejs/middleware` |
+| File Uploads, SSE, In-memory Cache | `princejs/helpers` |
 | Cron Scheduler | `princejs/scheduler` |
-| **OpenAPI + Scalar Docs** | `princejs` |
 | JSX / SSR | `princejs/jsx` |
 | SQLite Database | `princejs/db` |
-| Plugin System | `princejs` |
 | End-to-End Type Safety | `princejs/client` |
-| Deploy Adapters | `princejs/vercel` · `princejs/cloudflare` · `princejs/deno` · `princejs/node` |
-| Lifecycle Hooks | `princejs` | 
+| Vercel Edge adapter | `princejs/vercel` |
+| Cloudflare Workers adapter | `princejs/cloudflare` |
+| Deno Deploy adapter | `princejs/deno` |
+| Node.js / Express adapter | `princejs/node` |
 
 ---
 
@@ -85,31 +79,35 @@ app.listen(3000);
 
 ### Reading Cookies
 
-Cookies are automatically parsed from the request:
+Cookies are automatically parsed and available on every request:
 
 ```ts
+import { prince } from "princejs";
+
+const app = prince();
+
 app.get("/profile", (req) => ({
   sessionId: req.cookies?.sessionId,
   theme: req.cookies?.theme,
-  allCookies: req.cookies // Record<string, string>
+  allCookies: req.cookies, // Record<string, string>
 }));
 ```
 
 ### Setting Cookies
 
-Use the response builder to set cookies with full control:
+Use the response builder for full cookie control:
 
 ```ts
-app.get("/login", (req) => 
+app.get("/login", (req) =>
   app.response()
     .status(200)
     .json({ ok: true })
     .cookie("sessionId", "abc123", {
-      maxAge: 3600,        // 1 hour
+      maxAge: 3600,       // 1 hour
       path: "/",
-      httpOnly: true,      // not accessible from JS
-      secure: true,        // HTTPS only
-      sameSite: "Strict"   // CSRF protection
+      httpOnly: true,     // not accessible from JS
+      secure: true,       // HTTPS only
+      sameSite: "Strict", // CSRF protection
     })
 );
 
@@ -123,39 +121,30 @@ app.response()
 
 ### Client IP Detection
 
-Automatically detect client IP from request headers:
-
 ```ts
 app.get("/api/data", (req) => ({
   clientIp: req.ip,
-  data: [...]
+  data: [],
 }));
 ```
 
 **Supported headers** (in priority order):
-- `X-Forwarded-For` — Load balancers, proxies (first IP in list)
+- `X-Forwarded-For` — load balancers, proxies (first IP in list)
 - `X-Real-IP` — Nginx, Apache reverse proxy
 - `CF-Connecting-IP` — Cloudflare
-- `X-Client-IP` — Other proxy services
-- Fallback — `127.0.0.1` (localhost)
-
-**Use cases:**
-- 🔒 Rate limiting per IP
-- 📊 Geolocation analytics
-- 🚨 IP-based access control
-- 👥 User tracking & fraud detection
+- `X-Client-IP` — other proxy services
+- Fallback — `127.0.0.1`
 
 ```ts
-// Rate limit by IP
+// IP-based rate limiting
 app.use((req, next) => {
-  const ip = req.ip;
-  const count = ipTracker.getCount(ip) || 0;
+  const count = ipTracker.getCount(req.ip) || 0;
   if (count > 100) return new Response("Too many requests", { status: 429 });
-  ipTracker.increment(ip);
+  ipTracker.increment(req.ip);
   return next();
 });
 
-// IP-based security
+// IP allowlist
 app.post("/admin", (req) => {
   if (!ALLOWED_IPS.includes(req.ip!)) {
     return new Response("Forbidden", { status: 403 });
@@ -168,7 +157,7 @@ app.post("/admin", (req) => {
 
 ## 📖 OpenAPI + Scalar Docs ✨
 
-Auto-generate an OpenAPI 3.0 spec and serve a beautiful [Scalar](https://scalar.com) UI — all from a single `app.openapi()` call. Routes, validation, and docs stay in sync automatically.
+Auto-generate an OpenAPI 3.0 spec and serve a beautiful [Scalar](https://scalar.com) UI — all from a single `app.openapi()` call.
 
 ```ts
 import { prince } from "princejs";
@@ -203,24 +192,22 @@ app.listen(3000);
 `api.route()` does three things at once:
 
 - ✅ Registers the route on PrinceJS
-- ✅ Auto-wires `validate(schema.body)` — no separate import needed
+- ✅ Auto-wires body validation — no separate middleware needed
 - ✅ Writes the full OpenAPI spec entry
 
-| `schema` key | Runtime | Scalar Docs |
+| `schema` key | Runtime effect | Scalar docs |
 |---|---|---|
-| `body` | ✅ Validates request | ✅ requestBody model |
+| `body` | ✅ Validates & rejects bad requests | ✅ requestBody model |
 | `query` | — | ✅ Typed query params |
 | `response` | — | ✅ 200 response model |
 
-> Routes on `app.get()` / `app.post()` stay private — never appear in docs.
+> Routes on `app.get()` / `app.post()` stay private — they never appear in the docs.
 
 **Themes:** `default` · `moon` · `purple` · `solarized` · `bluePlanet` · `deepSpace` · `saturn` · `kepler` · `mars`
 
 ---
 
 ## 🔌 Plugin System
-
-Share bundles of routes and middleware as reusable plugins:
 
 ```ts
 import { prince, type PrincePlugin } from "princejs";
@@ -241,66 +228,53 @@ const usersPlugin: PrincePlugin<{ prefix?: string }> = (app, opts) => {
 
 const app = prince();
 app.plugin(usersPlugin, { prefix: "/api" });
+app.listen(3000);
 ```
 
 ---
 
 ## 🎣 Lifecycle Hooks
 
-React to key moments in request processing with lifecycle hooks:
-
 ```ts
 import { prince } from "princejs";
 
 const app = prince();
 
-// Called for every incoming request
 app.onRequest((req) => {
-  console.log(`📥 Request received: ${req.method} ${req.url}`);
-});
-
-// Called before handler execution
-app.onBeforeHandle((req, path, method) => {
-  console.log(`🔍 About to handle: ${method} ${path}`);
   (req as any).startTime = Date.now();
 });
 
-// Called after successful handler execution
-app.onAfterHandle((req, res, path, method) => {
-  const duration = Date.now() - (req as any).startTime;
-  console.log(`✅ Response: ${method} ${path} ${res.status} (${duration}ms)`);
+app.onBeforeHandle((req, path, method) => {
+  console.log(`🔍 ${method} ${path}`);
 });
 
-// Called when handler throws an error
+app.onAfterHandle((req, res, path, method) => {
+  const ms = Date.now() - (req as any).startTime;
+  console.log(`✅ ${method} ${path} ${res.status} (${ms}ms)`);
+});
+
 app.onError((err, req, path, method) => {
-  console.error(`❌ Error in ${method} ${path}:`, err.message);
-  // Send alert, log to monitoring service, etc.
+  console.error(`❌ ${method} ${path}:`, err.message);
 });
 
 app.get("/users", () => ({ users: [] }));
+app.listen(3000);
 ```
 
-**Hook execution order:**
-1. `onRequest` — early for request-wide setup
-2. `onBeforeHandle` — just before route handler runs
+**Execution order:**
+1. `onRequest` — runs before routing, good for setup
+2. `onBeforeHandle` — just before the handler
 3. Handler executes
-4. `onAfterHandle` — after success (on error, skipped)
-5. `onError` — only if handler throws (skips onAfterHandle)
-
-**Use cases:**
-- 📊 Metrics & observability
-- 🔍 Request inspection & debugging
-- ⏱️ Timing & performance monitoring
-- 🚨 Error tracking & alerting  
-- 🔐 Security audits & compliance logging
+4. `onAfterHandle` — after success (skipped on error)
+5. `onError` — only when handler throws
 
 ---
 
 ## 🔒 End-to-End Type Safety
 
-Define a contract once — your client gets full TypeScript autocompletion automatically:
-
 ```ts
+import { createClient, type PrinceApiContract } from "princejs/client";
+
 type ApiContract = {
   "GET /users/:id": {
     params: { id: string };
@@ -312,12 +286,13 @@ type ApiContract = {
   };
 };
 
-import { createClient } from "princejs/client";
-
 const client = createClient<ApiContract>("http://localhost:3000");
 
 const user = await client.get("/users/:id", { params: { id: "42" } });
 console.log(user.name); // typed as string ✅
+
+const created = await client.post("/users", { body: { name: "Alice" } });
+console.log(created.id); // typed as string ✅
 ```
 
 ---
@@ -342,20 +317,19 @@ import { toDeno } from "princejs/deno";
 Deno.serve(toDeno(app));
 ```
 
-**Node Adapter** - `server.ts`
+**Node.js** — `server.ts`
 ```ts
 import { createServer } from "http";
 import { toNode, toExpress } from "princejs/node";
+import express from "express";
 
 const app = prince();
-app.get("/", () => ({ message: "Hello from Node!" }));
+app.get("/", () => ({ message: "Hello!" }));
 
-// Native Node.js http
-const server = createServer(toNode(app));
-server.listen(3000);
+// Native Node http
+createServer(toNode(app)).listen(3000);
 
-// Or with Express
-import express from "express";
+// Or drop into Express
 const expressApp = express();
 expressApp.all("*", toExpress(app));
 expressApp.listen(3000);
@@ -367,102 +341,102 @@ expressApp.listen(3000);
 
 ```ts
 import { prince } from "princejs";
-import { cors, logger, rateLimit, auth, apiKey, jwt, session, compress, serve } from "princejs/middleware";
-import { validate } from "princejs/validation";
+import {
+  cors,
+  logger,
+  rateLimit,
+  auth,
+  apiKey,
+  jwt,
+  signJWT,
+  session,
+  compress,
+  validate,
+} from "princejs/middleware";
 import { cache, upload, sse } from "princejs/helpers";
 import { cron } from "princejs/scheduler";
 import { Html, Head, Body, H1, P, render } from "princejs/jsx";
 import { db } from "princejs/db";
 import { z } from "zod";
 
-const app = prince(true);
+const SECRET = new TextEncoder().encode("your-secret");
+const app = prince();
 
-// ==========================================
-// LIFECYCLE HOOKS - Timing & Observability
-// ==========================================
-app.onRequest((req) => {
-  (req as any).startTime = Date.now();
-});
-
-app.onBeforeHandle((req, path, method) => {
-  console.log(`🔍 Handling: ${method} ${path}`);
-});
-
+// ── Lifecycle hooks ───────────────────────────────────────
+app.onRequest((req) => { (req as any).t = Date.now(); });
 app.onAfterHandle((req, res, path, method) => {
-  const duration = Date.now() - (req as any).startTime;
-  console.log(`✅ ${method} ${path} → ${res.status} (${duration}ms)`);
+  console.log(`✅ ${method} ${path} ${res.status} (${Date.now() - (req as any).t}ms)`);
 });
-
 app.onError((err, req, path, method) => {
-  console.error(`❌ ${method} ${path} failed:`, err.message);
+  console.error(`❌ ${method} ${path}:`, err.message);
 });
 
-// ==========================================
-// GLOBAL MIDDLEWARE
-// ==========================================
+// ── Global middleware ─────────────────────────────────────
 app.use(cors());
 app.use(logger());
-app.use(rateLimit({ max: 100, window: 60 }));
-app.use(serve({ root: "./public" }));
-app.use(jwt(key));
-app.use(session({ secret: "key" }));
+app.use(rateLimit(100, 60));
+app.use(jwt(SECRET));
+app.use(session({ secret: "session-secret" }));
 app.use(compress());
 
-// ==========================================
-// ROUTES
-// ==========================================
+// ── JSX SSR ───────────────────────────────────────────────
+const Page = () => Html(Head("Home"), Body(H1("Hello World"), P("Welcome!")));
+app.get("/", () => render(Page()));
 
-// JSX
-const Page = () => Html(Head("Test Page"), Body(H1("Hello World"), P("This is a test")));
-app.get("/jsx", () => render(Page()));
-
-// Cookies & IP Detection
-app.post("/login", (req) => 
+// ── Cookies & IP ──────────────────────────────────────────
+app.post("/login", (req) =>
   app.response()
     .json({ ok: true, ip: req.ip })
-    .cookie("sessionId", "user_123", { 
-      httpOnly: true, 
-      secure: true,
-      sameSite: "Strict",
-      maxAge: 86400 // 24 hours
+    .cookie("sessionId", "user_123", {
+      httpOnly: true, secure: true, sameSite: "Strict", maxAge: 86400,
     })
 );
-
 app.get("/profile", (req) => ({
   sessionId: req.cookies?.sessionId,
   clientIp: req.ip,
 }));
 
-// Database
-const users = db.sqlite("./db.sqlite", "CREATE TABLE users...");
+// ── Database ──────────────────────────────────────────────
+const users = db.sqlite("./app.sqlite", `
+  CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, name TEXT NOT NULL)
+`);
 app.get("/users", () => users.query("SELECT * FROM users"));
 
-// WebSockets
+// ── WebSockets ────────────────────────────────────────────
 app.ws("/chat", {
-  open: (ws) => ws.send("Welcome!"),
+  open:    (ws) => ws.send("Welcome!"),
   message: (ws, msg) => ws.send(`Echo: ${msg}`),
+  close:   (ws) => console.log("disconnected"),
 });
 
-// Auth
+// ── Auth & API keys ───────────────────────────────────────
 app.get("/protected", auth(), (req) => ({ user: req.user }));
-app.get("/api", apiKey({ keys: ["key_123"] }), (req) => ({ ok: true }));
+app.get("/api", apiKey({ keys: ["key_123"] }), () => ({ ok: true }));
 
-// Helpers
-app.get("/data", cache(60)(() => ({ time: Date.now() })));
-app.post("/upload", upload(), (req) => ({ files: Object.keys(req.files || {}) }));
-app.get("/events", sse(), (req) => {
-  setInterval(() => req.sseSend({ time: Date.now() }), 1000);
+// ── Helpers ───────────────────────────────────────────────
+app.get("/cached",  cache(60)(() => ({ time: Date.now() })));
+app.post("/upload", upload());
+app.get("/events",  sse(), (req) => {
+  let i = 0;
+  const id = setInterval(() => {
+    req.sseSend({ count: i++ });
+    if (i >= 10) clearInterval(id);
+  }, 1000);
 });
 
-// ==========================================
-// CRON JOBS
-// ==========================================
-cron("*/1 * * * *", () => console.log("PrinceJS heartbeat"));
+// ── Validation ────────────────────────────────────────────
+app.post(
+  "/items",
+  validate(z.object({ name: z.string().min(1), price: z.number().positive() })),
+  (req) => ({ created: req.parsedBody })
+);
 
-// ==========================================
-// OPENAPI + SCALAR DOCS
-// ==========================================
+// ── Cron ──────────────────────────────────────────────────
+cron("* * * * *", () => console.log("💓 heartbeat"));
+
+// ── OpenAPI + Scalar ──────────────────────────────────────
 const api = app.openapi({ title: "PrinceJS App", version: "1.0.0" }, "/docs");
+
 api.route("GET", "/items", {
   summary: "List items",
   tags: ["items"],
@@ -471,6 +445,15 @@ api.route("GET", "/items", {
     response: z.array(z.object({ id: z.string(), name: z.string() })),
   },
 }, () => [{ id: "1", name: "Widget" }]);
+
+api.route("POST", "/items", {
+  summary: "Create item",
+  tags: ["items"],
+  schema: {
+    body:     z.object({ name: z.string().min(1), price: z.number().positive() }),
+    response: z.object({ id: z.string(), name: z.string() }),
+  },
+}, (req) => ({ id: crypto.randomUUID(), name: req.parsedBody.name }));
 
 app.listen(3000);
 ```
@@ -483,8 +466,6 @@ app.listen(3000);
 bun add princejs
 # or
 npm install princejs
-# or
-yarn add princejs
 ```
 
 ---
@@ -511,7 +492,7 @@ bun test
 
 <div align="center">
 
-**PrinceJS: Small in size. Giant in capability. 👑**
+**PrinceJS: 5.1kB. Hono-speed. Everything included. 👑**
 
 *Built with ❤️ in Nigeria*
 

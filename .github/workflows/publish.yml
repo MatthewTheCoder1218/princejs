@@ -10,40 +10,38 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       id-token: write
-      contents: read
-    
+      contents: write
+
     steps:
       - uses: actions/checkout@v4
-      
+
       - uses: oven-sh/setup-bun@v1
         with:
           bun-version: latest
-      
+
       - uses: actions/setup-node@v4
         with:
           node-version: 'lts/*'
           registry-url: 'https://registry.npmjs.org'
-      
+
       - name: Install dependencies
         run: bun install
-      
+
       - name: Run tests
         run: bun test
-      
+
       - name: Build
         run: bun run build
-      
+
       - name: Publish to npm
         run: npm publish --provenance
-      
-      - name: Create GitHub Release
-        uses: actions/create-release@v1
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ github.ref }}
-          release_name: Release ${{ github.ref }}
-          body: |
-            Published to npm: https://www.npmjs.com/package/princejs
-          draft: false
-          prerelease: false
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub Release
+        run: |
+          gh release create ${{ github.ref_name }} \
+            --title "Release ${{ github.ref_name }}" \
+            --notes "Published to npm: https://www.npmjs.com/package/princejs"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
