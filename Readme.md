@@ -28,7 +28,7 @@ Benchmarked with `oha -c 100 -z 30s` on Windows 10:
 | Fastify | 15,519 | 16,434 |
 | Express | 13,138 | 13,458 |
 
-> PrinceJS is **2.3× faster than Express**, matches Hono head-to-head, and sits at just **6.3kB gzipped** — loads in ~122ms on a slow 3G connection.
+> PrinceJS is **2.3× faster than Express**, matches Hono head-to-head, and sits at just **5.1kB gzipped** — loads in ~101ms on a slow 3G connection.
 
 ---
 
@@ -61,11 +61,9 @@ app.listen(3000);
 
 | Feature | Import |
 |---------|--------|
-| Routing, WebSockets, OpenAPI, Plugins, Lifecycle Hooks, Cookies, IP | `princejs` |
-| **Route Grouping** | `princejs` |
-| CORS, Logger, JWT, Auth, Rate Limit, Validate, Compress, Session, API Key | `princejs/middleware` |
-| **Secure Headers, Timeout, Request ID, IP Restriction, Static Files, JWKS** | `princejs/middleware` |
-| File Uploads, SSE, In-memory Cache, **Streaming** | `princejs/helpers` |
+| Routing, Route Grouping, WebSockets, OpenAPI, Plugins, Lifecycle Hooks, Cookies, IP | `princejs` |
+| CORS, Logger, JWT, JWKS, Auth, Rate Limit, Validate, Compress, Session, API Key, Secure Headers, Timeout, Request ID, IP Restriction, Static Files | `princejs/middleware` |
+| File Uploads, SSE, Streaming, In-memory Cache | `princejs/helpers` |
 | Cron Scheduler | `princejs/scheduler` |
 | JSX / SSR | `princejs/jsx` |
 | SQLite Database | `princejs/db` |
@@ -157,48 +155,56 @@ app.post("/admin", (req) => {
 
 ---
 
----
 
-## 📁 Route Grouping
+## 🗂️ Route Grouping
 
-Namespace routes under a shared prefix with optional shared middleware. Zero overhead at request time — just registers prefixed routes in the trie.
+Group routes under a shared prefix with optional shared middleware. Zero overhead at request time — purely a registration convenience.
 
 ```ts
+import { prince } from "princejs";
+
+const app = prince();
+
 // Basic grouping
 app.group("/api", (r) => {
-  r.get("/users",     () => ({ users: [] }));          // → GET /api/users
-  r.post("/users",    (req) => req.parsedBody);         // → POST /api/users
-  r.get("/users/:id", (req) => ({ id: req.params?.id })); // → GET /api/users/:id
+  r.get("/users",     () => ({ users: [] }));
+  r.post("/users",    (req) => ({ created: req.parsedBody }));
+  r.get("/users/:id", (req) => ({ id: req.params?.id }));
 });
+// → GET  /api/users
+// → POST /api/users
+// → GET  /api/users/:id
 
 // With shared middleware — applies to every route in the group
 import { auth } from "princejs/middleware";
 
 app.group("/admin", auth(), (r) => {
-  r.get("/stats",   () => ({ ok: true }));              // → GET /admin/stats
-  r.delete("/user", () => ({ deleted: true }));         // → DELETE /admin/user
+  r.get("/stats",   () => ({ stats: {} }));
+  r.delete("/users/:id", (req) => ({ deleted: req.params?.id }));
 });
 
 // Chainable
 app
   .group("/v1", (r) => { r.get("/ping", () => ({ v: 1 })); })
   .group("/v2", (r) => { r.get("/ping", () => ({ v: 2 })); });
+
+app.listen(3000);
 ```
 
 ---
 
-## 🔐 Security Middleware
+## 🛡️ Secure Headers
 
-### Secure Headers
-
-One call sets X-Frame-Options, HSTS, X-Content-Type-Options, X-XSS-Protection, and Referrer-Policy:
+One call sets all the security headers your production app needs:
 
 ```ts
 import { secureHeaders } from "princejs/middleware";
 
 app.use(secureHeaders());
+// Sets: X-Frame-Options, X-Content-Type-Options, X-XSS-Protection,
+//       Strict-Transport-Security, Referrer-Policy
 
-// Custom overrides
+// Custom options
 app.use(secureHeaders({
   xFrameOptions: "DENY",
   contentSecurityPolicy: "default-src 'self'",
@@ -207,18 +213,25 @@ app.use(secureHeaders({
 }));
 ```
 
-### Request Timeout
+---
+
+## ⏱️ Request Timeout
 
 Kill hanging requests before they pile up:
 
 ```ts
 import { timeout } from "princejs/middleware";
 
-app.use(timeout(5000));                        // 408 after 5s
-app.use(timeout(3000, "Gateway Timeout"));     // custom message
+app.use(timeout(5000));          // 5 second global timeout → 408
+app.use(timeout(3000, "Slow!")); // custom message
+
+// Per-route timeout
+app.get("/heavy", timeout(10000), (req) => heavyOperation());
 ```
 
-### Request ID
+---
+
+## 🏷️ Request ID
 
 Attach a unique ID to every request for distributed tracing and log correlation:
 
@@ -228,18 +241,20 @@ import { requestId } from "princejs/middleware";
 app.use(requestId());
 // → sets req.id and X-Request-ID response header
 
-// Custom header or generator
-app.use(requestId({
-  header:    "X-Trace-ID",
-  generator: () => `req-${Date.now()}`,
-}));
+// Custom header name
+app.use(requestId({ header: "X-Trace-ID" }));
+
+// Custom generator
+app.use(requestId({ generator: () => `req-${Date.now()}` }));
 
 app.get("/", (req) => ({ requestId: req.id }));
 ```
 
-### IP Restriction
+---
 
-Allow or deny specific IPs:
+## 🚫 IP Restriction
+
+Allow or block specific IPs:
 
 ```ts
 import { ipRestriction } from "princejs/middleware";
@@ -247,30 +262,13 @@ import { ipRestriction } from "princejs/middleware";
 // Only allow these IPs
 app.use(ipRestriction({ allowList: ["192.168.1.1", "10.0.0.1"] }));
 
-// Block specific IPs
+// Block these IPs
 app.use(ipRestriction({ denyList: ["1.2.3.4"] }));
-```
-
-### JWKS — Auth0, Clerk, Supabase
-
-Verify JWTs against a remote JWKS endpoint — no symmetric key needed:
-
-```ts
-import { jwks } from "princejs/middleware";
-
-// Auth0
-app.use(jwks("https://YOUR_DOMAIN.auth0.com/.well-known/jwks.json"));
-
-// Clerk
-app.use(jwks("https://YOUR_CLERK_DOMAIN/.well-known/jwks.json"));
-
-// Keys are cached automatically — only fetched on rotation
-app.get("/protected", auth(), (req) => ({ user: req.user }));
 ```
 
 ---
 
-## 📂 Static Files
+## 📁 Static Files
 
 Serve a directory of static files. Falls through to your routes if the file doesn't exist:
 
@@ -278,45 +276,66 @@ Serve a directory of static files. Falls through to your routes if the file does
 import { serveStatic } from "princejs/middleware";
 
 app.use(serveStatic("./public"));
-
-// Your API routes still work normally
-app.get("/api/users", () => ({ users: [] }));
+// → GET /logo.png        serves ./public/logo.png
+// → GET /               serves ./public/index.html
+// → GET /api/users      falls through to your route handler
 ```
 
 ---
 
 ## 🌊 Streaming
 
-Stream responses chunk by chunk — perfect for AI/LLM token output:
+Stream chunked responses for AI/LLM output, large payloads, or anything that generates data over time:
 
 ```ts
 import { stream } from "princejs/helpers";
 
-// Async generator (cleanest for AI output)
+// Async generator — cleanest for AI token streaming
 app.get("/ai", stream(async function*(req) {
   yield "Hello ";
+  await delay(100);
   yield "from ";
   yield "PrinceJS!";
 }));
 
-// Callback style
-app.get("/stream", stream((req) => {
+// Async callback
+app.get("/data", stream(async (req) => {
   req.streamSend("chunk 1");
+  await fetchMoreData();
   req.streamSend("chunk 2");
 }));
 
-// Async callback
-app.get("/slow-stream", stream(async (req) => {
-  req.streamSend("Starting...");
-  await fetch("https://api.openai.com/v1/chat/completions", { /* ... */ })
-    .then(res => res.body?.pipeTo(new WritableStream({
-      write(chunk) { req.streamSend(chunk); }
-    })));
-}));
-
-// Custom content type
-app.get("/binary", stream(() => { /* ... */ }, { contentType: "application/octet-stream" }));
+// Custom content type for binary or JSON streams
+app.get("/events", stream(async function*(req) {
+  for (const item of items) {
+    yield JSON.stringify(item) + "\n";
+  }
+}, { contentType: "application/x-ndjson" }));
 ```
+
+---
+
+## 🔑 JWKS / Third-Party Auth
+
+Verify JWTs from Auth0, Clerk, Supabase, or any JWKS endpoint — no symmetric key needed:
+
+```ts
+import { jwks } from "princejs/middleware";
+
+// Auth0
+app.use(jwks("https://your-domain.auth0.com/.well-known/jwks.json"));
+
+// Clerk
+app.use(jwks("https://your-clerk-domain.clerk.accounts.dev/.well-known/jwks.json"));
+
+// Supabase
+app.use(jwks("https://your-project.supabase.co/auth/v1/.well-known/jwks.json"));
+
+// req.user is set after verification, same as jwt()
+app.get("/protected", auth(), (req) => ({ user: req.user }));
+```
+
+---
 
 ## 📖 OpenAPI + Scalar Docs ✨
 
@@ -600,17 +619,6 @@ app.post(
   (req) => ({ created: req.parsedBody })
 );
 
-// ── Route groups ─────────────────────────────────────────
-app.group("/v1", (r) => {
-  r.get("/status", () => ({ version: 1, ok: true }));
-});
-
-// ── Streaming ─────────────────────────────────────────────
-app.get("/ai", stream(async function*() {
-  yield "Hello ";
-  yield "World!";
-}));
-
 // ── Cron ──────────────────────────────────────────────────
 cron("* * * * *", () => console.log("💓 heartbeat"));
 
@@ -672,7 +680,7 @@ bun test
 
 <div align="center">
 
-**PrinceJS: 6.3kB. Hono-speed. Everything included. 👑**
+**PrinceJS: 5.1kB. Hono-speed. Everything included. 👑**
 
 *Built with ❤️ in Nigeria*
 
