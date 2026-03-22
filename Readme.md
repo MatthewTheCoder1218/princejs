@@ -28,7 +28,7 @@ Benchmarked with `oha -c 100 -z 30s` on Windows 10:
 | Fastify | 15,519 | 16,434 |
 | Express | 13,138 | 13,458 |
 
-> PrinceJS is **2.3× faster than Express**, matches Hono head-to-head, and sits at just **5.1kB gzipped** — loads in ~101ms on a slow 3G connection.
+> PrinceJS is **2.3× faster than Express**, matches Hono head-to-head, and sits at approximately 5kB gzipped — loads in approximately 100ms on a slow 3G connection.
 
 ---
 
@@ -680,7 +680,7 @@ bun test
 
 <div align="center">
 
-**PrinceJS: 5.1kB. Hono-speed. Everything included. 👑**
+**PrinceJS: ~5kB. Hono-speed. Everything included. 👑**
 
 *Built with ❤️ in Nigeria*
 
