@@ -101,3 +101,77 @@ export const sse = () => {
     });
   };
 };
+// === STREAM ===
+// Generator-based streaming for AI/LLM token output, chunked responses etc.
+//
+// Usage (sync callback):
+//   app.get("/ai", stream((req) => {
+//     req.streamSend("Hello ");
+//     req.streamSend("World");
+//     req.streamClose();
+//   }));
+//
+// Usage (async generator):
+//   app.get("/ai", stream(async function*(req) {
+//     yield "Hello ";
+//     yield "World";
+//   }));
+export const stream = (
+  handler: (req: PrinceRequest) => AsyncGenerator<string | Uint8Array, void, unknown> | void | Promise<void>,
+  options?: { contentType?: string }
+) => {
+  const contentType = options?.contentType ?? "text/plain; charset=utf-8";
+  const enc = new TextEncoder();
+
+  return (req: PrinceRequest) => {
+    // Use a Promise to ensure we have the controller before calling the handler.
+    // This works around Bun deferring ReadableStream start() asynchronously.
+    let resolveController: (c: ReadableStreamDefaultController<Uint8Array>) => void;
+    const controllerReady = new Promise<ReadableStreamDefaultController<Uint8Array>>(
+      (res) => { resolveController = res; }
+    );
+
+    const readable = new ReadableStream<Uint8Array>({
+      start(c) { resolveController(c); },
+    });
+
+    // Run handler after controller is ready
+    controllerReady.then((controller) => {
+      const enqueue = (chunk: string | Uint8Array) =>
+        controller.enqueue(typeof chunk === "string" ? enc.encode(chunk) : chunk);
+
+      req.streamSend  = enqueue;
+      req.streamClose = () => controller.close();
+      req.streamError = (e: any) => controller.error(e);
+
+      const result = handler(req);
+
+      if (result && typeof (result as any)[Symbol.asyncIterator] === "function") {
+        (async () => {
+          try {
+            for await (const chunk of result as AsyncGenerator<string | Uint8Array>) {
+              enqueue(chunk);
+            }
+            controller.close();
+          } catch (e) { controller.error(e); }
+        })();
+      } else if (result instanceof Promise) {
+        result
+          .then(() => { try { controller.close(); } catch {} })
+          .catch((e) => { try { controller.error(e); } catch {} });
+      } else {
+        // Sync callback — it called streamSend/streamClose directly
+        // If it didn't call streamClose, close now
+        try { controller.close(); } catch {}
+      }
+    });
+
+    return new Response(readable, {
+      headers: {
+        "Content-Type": contentType,
+        "Transfer-Encoding": "chunked",
+        "X-Content-Type-Options": "nosniff",
+      },
+    });
+  };
+};

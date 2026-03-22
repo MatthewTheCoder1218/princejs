@@ -18,8 +18,12 @@ export interface PrinceRequest extends Request {
   session?: any;
   apiKey?: string;
   sseSend?: (data: any, event?: string, id?: string) => void;
+  streamSend?: (chunk: string | Uint8Array) => void;
+  streamClose?: () => void;
+  streamError?: (e: any) => void;
   cookies?: Record<string, string>;
   ip?: string;
+  id?: string;
   [key: string]: any;
 }
 
@@ -382,6 +386,16 @@ export interface RouteOperation {
   [key: string]: unknown;
 }
 
+// GroupRouter — returned by app.group(), scoped to the prefix
+export interface GroupRouter {
+  get(path: string, ...args: (RouteHandler | Middleware)[]): GroupRouter;
+  post(path: string, ...args: (RouteHandler | Middleware)[]): GroupRouter;
+  put(path: string, ...args: (RouteHandler | Middleware)[]): GroupRouter;
+  patch(path: string, ...args: (RouteHandler | Middleware)[]): GroupRouter;
+  delete(path: string, ...args: (RouteHandler | Middleware)[]): GroupRouter;
+  options(path: string, ...args: (RouteHandler | Middleware)[]): GroupRouter;
+}
+
 export class Prince {
   private rawRoutes: RouteEntry[] = [];
   private middlewares: Middleware[] = [];
@@ -478,6 +492,43 @@ export class Prince {
   delete(path: string, ...args: (RouteHandler | Middleware)[]) { return this.add("DELETE", path, args); }
   patch(path: string, ...args: (RouteHandler | Middleware)[]) { return this.add("PATCH", path, args); }
   options(path: string, ...args: (RouteHandler | Middleware)[]) { return this.add("OPTIONS", path, args); }
+
+  /**
+   * Group routes under a shared prefix and optional shared middleware.
+   * Zero cost at request time — just prefixes paths at registration.
+   *
+   * @example
+   * app.group("/api", (r) => {
+   *   r.get("/users", () => ({ users: [] }));        // → GET /api/users
+   *   r.post("/users", (req) => req.parsedBody);      // → POST /api/users
+   * });
+   *
+   * // With shared middleware
+   * app.group("/admin", auth(), (r) => {
+   *   r.get("/stats", () => ({ ok: true }));          // → GET /admin/stats
+   * });
+   */
+  group(prefix: string, ...args: any[]) {
+    // Last arg is always the callback, rest are shared middlewares
+    const cb: (router: GroupRouter) => void = args[args.length - 1];
+    const sharedMw: Middleware[] = args.slice(0, -1);
+    if (!prefix.startsWith("/")) prefix = "/" + prefix;
+    if (prefix.endsWith("/")) prefix = prefix.slice(0, -1);
+
+    const self = this;
+    // GroupRouter wraps each method call to prepend the prefix and shared mw
+    const router: GroupRouter = {
+      get:     (p, ...a) => { self.add("GET",     prefix + p, sharedMw.concat(a as any)); return router; },
+      post:    (p, ...a) => { self.add("POST",    prefix + p, sharedMw.concat(a as any)); return router; },
+      put:     (p, ...a) => { self.add("PUT",     prefix + p, sharedMw.concat(a as any)); return router; },
+      patch:   (p, ...a) => { self.add("PATCH",   prefix + p, sharedMw.concat(a as any)); return router; },
+      delete:  (p, ...a) => { self.add("DELETE",  prefix + p, sharedMw.concat(a as any)); return router; },
+      options: (p, ...a) => { self.add("OPTIONS", prefix + p, sharedMw.concat(a as any)); return router; },
+    };
+    cb(router);
+    return this;
+  }
+
   ws(path: string, handlers: WebSocketHandler) {
     this.wsRoutes[path] = handlers;
     return this;

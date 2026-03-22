@@ -438,3 +438,123 @@ export const session = (options: {
     });
   };
 };
+// === SECURE HEADERS ===
+export const secureHeaders = (options?: {
+  xFrameOptions?: string;
+  xContentTypeOptions?: boolean;
+  xXssProtection?: string;
+  strictTransportSecurity?: string;
+  referrerPolicy?: string;
+  permissionsPolicy?: string;
+  contentSecurityPolicy?: string;
+}) => {
+  const opts = options ?? {};
+  return async (req: PrinceRequest, next: Next) => {
+    const response = await next();
+    if (!response) return response;
+    const headers = new Headers(response.headers);
+    headers.set("X-Frame-Options",           opts.xFrameOptions            ?? "SAMEORIGIN");
+    headers.set("X-XSS-Protection",          opts.xXssProtection           ?? "1; mode=block");
+    headers.set("Referrer-Policy",           opts.referrerPolicy           ?? "strict-origin-when-cross-origin");
+    if (opts.xContentTypeOptions !== false)
+      headers.set("X-Content-Type-Options",  "nosniff");
+    if (opts.strictTransportSecurity !== "")
+      headers.set("Strict-Transport-Security", opts.strictTransportSecurity ?? "max-age=31536000; includeSubDomains");
+    if (opts.permissionsPolicy)
+      headers.set("Permissions-Policy",      opts.permissionsPolicy);
+    if (opts.contentSecurityPolicy)
+      headers.set("Content-Security-Policy", opts.contentSecurityPolicy);
+    return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+  };
+};
+
+// === REQUEST TIMEOUT ===
+export const timeout = (ms: number, message = "Request Timeout") => {
+  return async (req: PrinceRequest, next: Next) => {
+    let timer: ReturnType<typeof setTimeout>;
+    const timeoutPromise = new Promise<Response>((resolve) => {
+      timer = setTimeout(() => resolve(
+        new Response(JSON.stringify({ error: message }), {
+          status: 408,
+          headers: { "Content-Type": "application/json" }
+        })
+      ), ms);
+    });
+    try {
+      const result = await Promise.race([next(), timeoutPromise]);
+      return result;
+    } finally {
+      clearTimeout(timer!);
+    }
+  };
+};
+
+// === REQUEST ID ===
+export const requestId = (options?: { header?: string; generator?: () => string }) => {
+  const header = options?.header ?? "X-Request-ID";
+  const generate = options?.generator ?? (() => crypto.randomUUID());
+  return async (req: PrinceRequest, next: Next) => {
+    const id = req.headers.get(header) ?? generate();
+    req.id = id;
+    const response = await next();
+    if (!response) return response;
+    const headers = new Headers(response.headers);
+    headers.set(header, id);
+    return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+  };
+};
+
+// === IP RESTRICTION ===
+export const ipRestriction = (options: { allowList?: string[]; denyList?: string[] }) => {
+  const allow = options.allowList ? new Set(options.allowList) : null;
+  const deny  = options.denyList  ? new Set(options.denyList)  : null;
+  return async (req: PrinceRequest, next: Next) => {
+    const ip = req.ip ?? "127.0.0.1";
+    if (deny  && deny.has(ip))  return new Response(JSON.stringify({ error: "Forbidden" }), { status: 403, headers: { "Content-Type": "application/json" } });
+    if (allow && !allow.has(ip)) return new Response(JSON.stringify({ error: "Forbidden" }), { status: 403, headers: { "Content-Type": "application/json" } });
+    return next();
+  };
+};
+
+// === STATIC FILES ===
+export const serveStatic = (root: string) => {
+  const base = root.replace(/\/$/, "");
+  return async (req: PrinceRequest, next: Next) => {
+    if (req.method !== "GET" && req.method !== "HEAD") return next();
+    const pathname = new URL(req.url).pathname;
+    const filePath = base + pathname;
+    const file = Bun.file(filePath);
+    if (await file.exists()) {
+      return new Response(file);
+    }
+    // Try index.html for directory requests
+    if (!pathname.includes(".")) {
+      const index = Bun.file(filePath.replace(/\/$/, "") + "/index.html");
+      if (await index.exists()) return new Response(index);
+    }
+    return next();
+  };
+};
+
+// === JWKS / JWK AUTH ===
+// Extends jwt() to also accept a JWKS URL string for Auth0, Clerk, Supabase etc.
+import { createRemoteJWKSet } from "jose";
+
+export const jwks = (jwksUrl: string, options?: { algorithms?: string[] }) => {
+  const JWKS = createRemoteJWKSet(new URL(jwksUrl));
+  return async (req: PrinceRequest, next: Next) => {
+    const auth = req.headers.get("authorization");
+    req.user = undefined;
+    if (auth?.startsWith("Bearer ")) {
+      const token = auth.slice(7).trim();
+      try {
+        const { jwtVerify } = await import("jose");
+        const { payload } = await jwtVerify(token, JWKS, {
+          algorithms: (options?.algorithms ?? ["RS256", "RS512", "ES256", "ES512"]) as any,
+        });
+        req.user = payload;
+      } catch {}
+    }
+    return next();
+  };
+};

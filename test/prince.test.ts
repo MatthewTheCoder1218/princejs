@@ -1,8 +1,8 @@
 // test/prince.test.ts
 import { describe, test, expect, beforeEach, afterEach, jest, it, spyOn } from "bun:test";
 import { prince } from "../src/prince";
-import { jwt, signJWT, rateLimit, validate, cors, logger, auth, apiKey, compress, session } from "../src/middleware";
-import { cache, email, upload, sse } from "../src/helpers";
+import { jwt, signJWT, rateLimit, validate, cors, logger, auth, apiKey, compress, session, secureHeaders, timeout, requestId, ipRestriction, serveStatic } from "../src/middleware";
+import { cache, email, upload, sse, stream } from "../src/helpers";
 import { openapi, cron } from "../src/scheduler";
 import { db } from "../src/db";
 import { Html, Head, Body, H1, P, render, Div } from '../src/jsx';
@@ -3589,3 +3589,461 @@ describe("Lifecycle Hooks", () => {
 });
 
 console.log("\n✅ All tests defined! Run with: bun test\n");
+// ==========================================
+// ROUTE GROUPING
+// ==========================================
+
+describe("Route Grouping", () => {
+  test("group() prefixes all routes correctly", async () => {
+    const app = prince();
+    app.group("/api", (r) => {
+      r.get("/users", () => ({ users: [] }));
+      r.post("/users", (req) => ({ created: req.parsedBody }));
+      r.get("/users/:id", (req) => ({ id: req.params?.id }));
+    });
+
+    const res1 = await app.fetch(new Request("http://localhost/api/users"));
+    expect(res1.status).toBe(200);
+    const d1 = await res1.json();
+    expect(d1.users).toEqual([]);
+
+    const res2 = await app.fetch(new Request("http://localhost/api/users/42"));
+    expect(res2.status).toBe(200);
+    const d2 = await res2.json();
+    expect(d2.id).toBe("42");
+
+    // Non-prefixed path should 404
+    const res3 = await app.fetch(new Request("http://localhost/users"));
+    expect(res3.status).toBe(404);
+  });
+
+  test("group() routes don't exist outside the prefix", async () => {
+    const app = prince();
+    app.group("/v1", (r) => {
+      r.get("/ping", () => ({ pong: true }));
+    });
+    const res = await app.fetch(new Request("http://localhost/ping"));
+    expect(res.status).toBe(404);
+  });
+
+  test("group() with shared middleware applies to all routes in group", async () => {
+    const app = prince();
+    const guardMw = async (req: any, next: any) => {
+      if (!req.headers.get("x-token")) {
+        return new Response(JSON.stringify({ error: "No token" }), { status: 401 });
+      }
+      return next();
+    };
+
+    app.group("/protected", guardMw, (r) => {
+      r.get("/a", () => ({ a: true }));
+      r.get("/b", () => ({ b: true }));
+    });
+
+    // Without token — both routes blocked
+    const res1 = await app.fetch(new Request("http://localhost/protected/a"));
+    expect(res1.status).toBe(401);
+
+    const res2 = await app.fetch(new Request("http://localhost/protected/b"));
+    expect(res2.status).toBe(401);
+
+    // With token — both pass
+    const res3 = await app.fetch(new Request("http://localhost/protected/a", {
+      headers: { "x-token": "yes" }
+    }));
+    expect(res3.status).toBe(200);
+  });
+
+  test("group() is chainable", async () => {
+    const app = prince();
+    app
+      .group("/v1", (r) => { r.get("/ping", () => ({ v: 1 })); })
+      .group("/v2", (r) => { r.get("/ping", () => ({ v: 2 })); });
+
+    const r1 = await (await app.fetch(new Request("http://localhost/v1/ping"))).json();
+    const r2 = await (await app.fetch(new Request("http://localhost/v2/ping"))).json();
+    expect(r1.v).toBe(1);
+    expect(r2.v).toBe(2);
+  });
+
+  test("group() supports all HTTP methods", async () => {
+    const app = prince();
+    app.group("/items", (r) => {
+      r.get("/list",   () => ({ method: "GET" }));
+      r.post("/list",  () => ({ method: "POST" }));
+      r.put("/:id",    () => ({ method: "PUT" }));
+      r.patch("/:id",  () => ({ method: "PATCH" }));
+      r.delete("/:id", () => ({ method: "DELETE" }));
+    });
+
+    const get    = await app.fetch(new Request("http://localhost/items/list"));
+    const post   = await app.fetch(new Request("http://localhost/items/list", { method: "POST" }));
+    const put    = await app.fetch(new Request("http://localhost/items/42",   { method: "PUT" }));
+    const patch  = await app.fetch(new Request("http://localhost/items/42",   { method: "PATCH" }));
+    const del    = await app.fetch(new Request("http://localhost/items/42",   { method: "DELETE" }));
+
+    expect(get.status).toBe(200);
+    expect(post.status).toBe(200);
+    expect(put.status).toBe(200);
+    expect(patch.status).toBe(200);
+    expect(del.status).toBe(200);
+
+    expect((await get.json()).method).toBe("GET");
+    expect((await post.json()).method).toBe("POST");
+    expect((await put.json()).method).toBe("PUT");
+    expect((await patch.json()).method).toBe("PATCH");
+    expect((await del.json()).method).toBe("DELETE");
+  });
+
+  test("nested groups work via sequential calls", async () => {
+    const app = prince();
+    app.group("/api", (r) => {
+      r.get("/health", () => ({ ok: true }));
+    });
+    app.group("/api/v2", (r) => {
+      r.get("/health", () => ({ ok: true, v: 2 }));
+    });
+    const r1 = await (await app.fetch(new Request("http://localhost/api/health"))).json();
+    const r2 = await (await app.fetch(new Request("http://localhost/api/v2/health"))).json();
+    expect(r1.ok).toBe(true);
+    expect(r2.v).toBe(2);
+  });
+});
+
+// ==========================================
+// SECURE HEADERS
+// ==========================================
+
+describe("Middleware - Secure Headers", () => {
+  test("secureHeaders() sets default security headers", async () => {
+    const app = prince();
+    app.use(secureHeaders());
+    app.get("/", () => ({ ok: true }));
+
+    const res = await app.fetch(new Request("http://localhost/"));
+    expect(res.headers.get("X-Frame-Options")).toBe("SAMEORIGIN");
+    expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(res.headers.get("X-XSS-Protection")).toBe("1; mode=block");
+    expect(res.headers.get("Referrer-Policy")).toBe("strict-origin-when-cross-origin");
+    expect(res.headers.get("Strict-Transport-Security")).toContain("max-age=");
+  });
+
+  test("secureHeaders() allows custom X-Frame-Options", async () => {
+    const app = prince();
+    app.use(secureHeaders({ xFrameOptions: "DENY" }));
+    app.get("/", () => ({ ok: true }));
+
+    const res = await app.fetch(new Request("http://localhost/"));
+    expect(res.headers.get("X-Frame-Options")).toBe("DENY");
+  });
+
+  test("secureHeaders() can disable X-Content-Type-Options", async () => {
+    const app = prince();
+    app.use(secureHeaders({ xContentTypeOptions: false }));
+    app.get("/", () => ({ ok: true }));
+
+    const res = await app.fetch(new Request("http://localhost/"));
+    expect(res.headers.get("X-Content-Type-Options")).toBeNull();
+  });
+
+  test("secureHeaders() sets CSP when provided", async () => {
+    const app = prince();
+    app.use(secureHeaders({ contentSecurityPolicy: "default-src 'self'" }));
+    app.get("/", () => ({ ok: true }));
+
+    const res = await app.fetch(new Request("http://localhost/"));
+    expect(res.headers.get("Content-Security-Policy")).toBe("default-src 'self'");
+  });
+
+  test("secureHeaders() sets Permissions-Policy when provided", async () => {
+    const app = prince();
+    app.use(secureHeaders({ permissionsPolicy: "camera=(), microphone=()" }));
+    app.get("/", () => ({ ok: true }));
+
+    const res = await app.fetch(new Request("http://localhost/"));
+    expect(res.headers.get("Permissions-Policy")).toBe("camera=(), microphone=()");
+  });
+});
+
+// ==========================================
+// REQUEST TIMEOUT
+// ==========================================
+
+describe("Middleware - Request Timeout", () => {
+  test("timeout() passes through fast responses", async () => {
+    const app = prince();
+    app.use(timeout(1000));
+    app.get("/fast", () => ({ ok: true }));
+
+    const res = await app.fetch(new Request("http://localhost/fast"));
+    expect(res.status).toBe(200);
+  });
+
+  test("timeout() returns 408 when handler is too slow", async () => {
+    const app = prince();
+    app.use(timeout(50));
+    app.get("/slow", async () => {
+      await new Promise(r => setTimeout(r, 200));
+      return { ok: true };
+    });
+
+    const res = await app.fetch(new Request("http://localhost/slow"));
+    expect(res.status).toBe(408);
+    const data = await res.json();
+    expect(data.error).toBe("Request Timeout");
+  });
+
+  test("timeout() uses custom error message", async () => {
+    const app = prince();
+    app.use(timeout(50, "Too slow!"));
+    app.get("/slow", async () => {
+      await new Promise(r => setTimeout(r, 200));
+      return { ok: true };
+    });
+
+    const res = await app.fetch(new Request("http://localhost/slow"));
+    const data = await res.json();
+    expect(data.error).toBe("Too slow!");
+  });
+
+  test("timeout() cleans up timer on success", async () => {
+    const app = prince();
+    app.use(timeout(500));
+    app.get("/ok", () => ({ done: true }));
+
+    const res = await app.fetch(new Request("http://localhost/ok"));
+    expect(res.status).toBe(200);
+  });
+});
+
+// ==========================================
+// REQUEST ID
+// ==========================================
+
+describe("Middleware - Request ID", () => {
+  test("requestId() adds X-Request-ID header to response", async () => {
+    const app = prince();
+    app.use(requestId());
+    app.get("/", () => ({ ok: true }));
+
+    const res = await app.fetch(new Request("http://localhost/"));
+    expect(res.headers.get("X-Request-ID")).toBeDefined();
+    expect(res.headers.get("X-Request-ID")!.length).toBeGreaterThan(0);
+  });
+
+  test("requestId() sets req.id on the request", async () => {
+    const app = prince();
+    app.use(requestId());
+    app.get("/", (req) => ({ id: req.id }));
+
+    const res = await app.fetch(new Request("http://localhost/"));
+    const data = await res.json();
+    expect(data.id).toBeDefined();
+  });
+
+  test("requestId() reuses incoming X-Request-ID if present", async () => {
+    const app = prince();
+    app.use(requestId());
+    app.get("/", (req) => ({ id: req.id }));
+
+    const res = await app.fetch(new Request("http://localhost/", {
+      headers: { "X-Request-ID": "my-custom-id" }
+    }));
+    const data = await res.json();
+    expect(data.id).toBe("my-custom-id");
+    expect(res.headers.get("X-Request-ID")).toBe("my-custom-id");
+  });
+
+  test("requestId() supports custom header name", async () => {
+    const app = prince();
+    app.use(requestId({ header: "X-Trace-ID" }));
+    app.get("/", (req) => ({ id: req.id }));
+
+    const res = await app.fetch(new Request("http://localhost/"));
+    expect(res.headers.get("X-Trace-ID")).toBeDefined();
+  });
+
+  test("requestId() supports custom generator", async () => {
+    const app = prince();
+    let counter = 0;
+    app.use(requestId({ generator: () => `req-${++counter}` }));
+    app.get("/", (req) => ({ id: req.id }));
+
+    const res1 = await app.fetch(new Request("http://localhost/"));
+    const res2 = await app.fetch(new Request("http://localhost/"));
+    expect((await res1.json()).id).toBe("req-1");
+    expect((await res2.json()).id).toBe("req-2");
+  });
+
+  test("each request gets a unique ID", async () => {
+    const app = prince();
+    app.use(requestId());
+    app.get("/", () => ({ ok: true }));
+
+    const ids = new Set<string>();
+    for (let i = 0; i < 5; i++) {
+      const res = await app.fetch(new Request("http://localhost/"));
+      ids.add(res.headers.get("X-Request-ID")!);
+    }
+    expect(ids.size).toBe(5);
+  });
+});
+
+// ==========================================
+// IP RESTRICTION
+// ==========================================
+
+describe("Middleware - IP Restriction", () => {
+  test("ipRestriction() allowList blocks IPs not in list", async () => {
+    const app = prince();
+    app.use(ipRestriction({ allowList: ["192.168.1.1"] }));
+    app.get("/", () => ({ ok: true }));
+
+    const res = await app.fetch(new Request("http://localhost/", {
+      headers: { "x-real-ip": "10.0.0.1" }
+    }));
+    expect(res.status).toBe(403);
+  });
+
+  test("ipRestriction() allowList passes allowed IPs", async () => {
+    const app = prince();
+    app.use(ipRestriction({ allowList: ["192.168.1.1"] }));
+    app.get("/", () => ({ ok: true }));
+
+    const res = await app.fetch(new Request("http://localhost/", {
+      headers: { "x-real-ip": "192.168.1.1" }
+    }));
+    expect(res.status).toBe(200);
+  });
+
+  test("ipRestriction() denyList blocks denied IPs", async () => {
+    const app = prince();
+    app.use(ipRestriction({ denyList: ["10.0.0.1"] }));
+    app.get("/", () => ({ ok: true }));
+
+    const res = await app.fetch(new Request("http://localhost/", {
+      headers: { "x-real-ip": "10.0.0.1" }
+    }));
+    expect(res.status).toBe(403);
+  });
+
+  test("ipRestriction() denyList passes non-denied IPs", async () => {
+    const app = prince();
+    app.use(ipRestriction({ denyList: ["10.0.0.1"] }));
+    app.get("/", () => ({ ok: true }));
+
+    const res = await app.fetch(new Request("http://localhost/", {
+      headers: { "x-real-ip": "192.168.1.100" }
+    }));
+    expect(res.status).toBe(200);
+  });
+
+  test("ipRestriction() 403 response has JSON body", async () => {
+    const app = prince();
+    app.use(ipRestriction({ denyList: ["1.2.3.4"] }));
+    app.get("/", () => ({ ok: true }));
+
+    const res = await app.fetch(new Request("http://localhost/", {
+      headers: { "x-real-ip": "1.2.3.4" }
+    }));
+    const data = await res.json();
+    expect(data.error).toBe("Forbidden");
+  });
+});
+
+// ==========================================
+// STATIC FILE SERVING
+// ==========================================
+
+describe("Middleware - serveStatic", () => {
+  test("serveStatic() returns 404 equivalent for missing files", async () => {
+    const app = prince();
+    app.use(serveStatic("./nonexistent-dir"));
+    app.get("/fallback", () => ({ fallback: true }));
+
+    // Missing file falls through to next route
+    const res = await app.fetch(new Request("http://localhost/fallback"));
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.fallback).toBe(true);
+  });
+
+  test("serveStatic() does not intercept non-GET methods", async () => {
+    const app = prince();
+    app.use(serveStatic("./public"));
+    app.post("/api/data", (req) => ({ ok: true }));
+
+    const res = await app.fetch(new Request("http://localhost/api/data", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({})
+    }));
+    expect(res.status).toBe(200);
+  });
+});
+
+// ==========================================
+// STREAM HELPER
+// ==========================================
+
+describe("Helper - stream", () => {
+  test("stream() returns a streaming response with correct content-type", async () => {
+    const app = prince();
+    app.get("/stream", stream((req) => {
+      req.streamSend!("hello");
+    }));
+
+    const res = await app.fetch(new Request("http://localhost/stream"));
+    expect(res.headers.get("Content-Type")).toContain("text/plain");
+    expect(res.body).toBeDefined();
+  });
+
+  test("stream() supports custom content-type", async () => {
+    const app = prince();
+    app.get("/stream", stream((_req) => {
+      // no-op — auto-closes
+    }, { contentType: "application/octet-stream" }));
+
+    const res = await app.fetch(new Request("http://localhost/stream"));
+    expect(res.headers.get("Content-Type")).toBe("application/octet-stream");
+  });
+
+  test("stream() sends chunks that can be read via callback", async () => {
+    const app = prince();
+    app.get("/chunks", stream((req) => {
+      req.streamSend!("chunk1");
+      req.streamSend!("chunk2");
+    }));
+
+    const res = await app.fetch(new Request("http://localhost/chunks"));
+    const text = await res.text();
+    expect(text).toContain("chunk1");
+    expect(text).toContain("chunk2");
+  });
+
+  test("stream() works with async generator", async () => {
+    const app = prince();
+    app.get("/gen", stream(async function* () {
+      yield "a";
+      yield "b";
+      yield "c";
+    }));
+
+    const res = await app.fetch(new Request("http://localhost/gen"));
+    const text = await res.text();
+    expect(text).toBe("abc");
+  });
+
+  test("stream() works with async callback", async () => {
+    const app = prince();
+    app.get("/async", stream(async (req) => {
+      req.streamSend!("hello");
+      await new Promise(r => setTimeout(r, 10));
+      req.streamSend!(" async");
+    }));
+
+    const res = await app.fetch(new Request("http://localhost/async"));
+    const text = await res.text();
+    expect(text).toBe("hello async");
+  });
+});
