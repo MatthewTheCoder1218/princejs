@@ -28,7 +28,7 @@ Benchmarked with `oha -c 100 -z 30s` on Windows 10:
 | Fastify | 15,519 | 16,434 |
 | Express | 13,138 | 13,458 |
 
-> PrinceJS is **2.3× faster than Express**, matches Hono head-to-head, and sits at just **5.1kB gzipped** — loads in ~101ms on a slow 3G connection.
+> PrinceJS is **2.3× faster than Express**, matches Hono head-to-head, and sits at just **6.3kB gzipped** — loads in ~122ms on a slow 3G connection.
 
 ---
 
@@ -62,8 +62,10 @@ app.listen(3000);
 | Feature | Import |
 |---------|--------|
 | Routing, WebSockets, OpenAPI, Plugins, Lifecycle Hooks, Cookies, IP | `princejs` |
+| **Route Grouping** | `princejs` |
 | CORS, Logger, JWT, Auth, Rate Limit, Validate, Compress, Session, API Key | `princejs/middleware` |
-| File Uploads, SSE, In-memory Cache | `princejs/helpers` |
+| **Secure Headers, Timeout, Request ID, IP Restriction, Static Files, JWKS** | `princejs/middleware` |
+| File Uploads, SSE, In-memory Cache, **Streaming** | `princejs/helpers` |
 | Cron Scheduler | `princejs/scheduler` |
 | JSX / SSR | `princejs/jsx` |
 | SQLite Database | `princejs/db` |
@@ -154,6 +156,167 @@ app.post("/admin", (req) => {
 ```
 
 ---
+
+---
+
+## 📁 Route Grouping
+
+Namespace routes under a shared prefix with optional shared middleware. Zero overhead at request time — just registers prefixed routes in the trie.
+
+```ts
+// Basic grouping
+app.group("/api", (r) => {
+  r.get("/users",     () => ({ users: [] }));          // → GET /api/users
+  r.post("/users",    (req) => req.parsedBody);         // → POST /api/users
+  r.get("/users/:id", (req) => ({ id: req.params?.id })); // → GET /api/users/:id
+});
+
+// With shared middleware — applies to every route in the group
+import { auth } from "princejs/middleware";
+
+app.group("/admin", auth(), (r) => {
+  r.get("/stats",   () => ({ ok: true }));              // → GET /admin/stats
+  r.delete("/user", () => ({ deleted: true }));         // → DELETE /admin/user
+});
+
+// Chainable
+app
+  .group("/v1", (r) => { r.get("/ping", () => ({ v: 1 })); })
+  .group("/v2", (r) => { r.get("/ping", () => ({ v: 2 })); });
+```
+
+---
+
+## 🔐 Security Middleware
+
+### Secure Headers
+
+One call sets X-Frame-Options, HSTS, X-Content-Type-Options, X-XSS-Protection, and Referrer-Policy:
+
+```ts
+import { secureHeaders } from "princejs/middleware";
+
+app.use(secureHeaders());
+
+// Custom overrides
+app.use(secureHeaders({
+  xFrameOptions: "DENY",
+  contentSecurityPolicy: "default-src 'self'",
+  permissionsPolicy: "camera=(), microphone=()",
+  strictTransportSecurity: "max-age=63072000; includeSubDomains; preload",
+}));
+```
+
+### Request Timeout
+
+Kill hanging requests before they pile up:
+
+```ts
+import { timeout } from "princejs/middleware";
+
+app.use(timeout(5000));                        // 408 after 5s
+app.use(timeout(3000, "Gateway Timeout"));     // custom message
+```
+
+### Request ID
+
+Attach a unique ID to every request for distributed tracing and log correlation:
+
+```ts
+import { requestId } from "princejs/middleware";
+
+app.use(requestId());
+// → sets req.id and X-Request-ID response header
+
+// Custom header or generator
+app.use(requestId({
+  header:    "X-Trace-ID",
+  generator: () => `req-${Date.now()}`,
+}));
+
+app.get("/", (req) => ({ requestId: req.id }));
+```
+
+### IP Restriction
+
+Allow or deny specific IPs:
+
+```ts
+import { ipRestriction } from "princejs/middleware";
+
+// Only allow these IPs
+app.use(ipRestriction({ allowList: ["192.168.1.1", "10.0.0.1"] }));
+
+// Block specific IPs
+app.use(ipRestriction({ denyList: ["1.2.3.4"] }));
+```
+
+### JWKS — Auth0, Clerk, Supabase
+
+Verify JWTs against a remote JWKS endpoint — no symmetric key needed:
+
+```ts
+import { jwks } from "princejs/middleware";
+
+// Auth0
+app.use(jwks("https://YOUR_DOMAIN.auth0.com/.well-known/jwks.json"));
+
+// Clerk
+app.use(jwks("https://YOUR_CLERK_DOMAIN/.well-known/jwks.json"));
+
+// Keys are cached automatically — only fetched on rotation
+app.get("/protected", auth(), (req) => ({ user: req.user }));
+```
+
+---
+
+## 📂 Static Files
+
+Serve a directory of static files. Falls through to your routes if the file doesn't exist:
+
+```ts
+import { serveStatic } from "princejs/middleware";
+
+app.use(serveStatic("./public"));
+
+// Your API routes still work normally
+app.get("/api/users", () => ({ users: [] }));
+```
+
+---
+
+## 🌊 Streaming
+
+Stream responses chunk by chunk — perfect for AI/LLM token output:
+
+```ts
+import { stream } from "princejs/helpers";
+
+// Async generator (cleanest for AI output)
+app.get("/ai", stream(async function*(req) {
+  yield "Hello ";
+  yield "from ";
+  yield "PrinceJS!";
+}));
+
+// Callback style
+app.get("/stream", stream((req) => {
+  req.streamSend("chunk 1");
+  req.streamSend("chunk 2");
+}));
+
+// Async callback
+app.get("/slow-stream", stream(async (req) => {
+  req.streamSend("Starting...");
+  await fetch("https://api.openai.com/v1/chat/completions", { /* ... */ })
+    .then(res => res.body?.pipeTo(new WritableStream({
+      write(chunk) { req.streamSend(chunk); }
+    })));
+}));
+
+// Custom content type
+app.get("/binary", stream(() => { /* ... */ }, { contentType: "application/octet-stream" }));
+```
 
 ## 📖 OpenAPI + Scalar Docs ✨
 
@@ -352,8 +515,11 @@ import {
   session,
   compress,
   validate,
+  secureHeaders,
+  timeout,
+  requestId,
 } from "princejs/middleware";
-import { cache, upload, sse } from "princejs/helpers";
+import { cache, upload, sse, stream } from "princejs/helpers";
 import { cron } from "princejs/scheduler";
 import { Html, Head, Body, H1, P, render } from "princejs/jsx";
 import { db } from "princejs/db";
@@ -372,6 +538,9 @@ app.onError((err, req, path, method) => {
 });
 
 // ── Global middleware ─────────────────────────────────────
+app.use(secureHeaders());
+app.use(requestId());
+app.use(timeout(10000));
 app.use(cors());
 app.use(logger());
 app.use(rateLimit(100, 60));
@@ -430,6 +599,17 @@ app.post(
   validate(z.object({ name: z.string().min(1), price: z.number().positive() })),
   (req) => ({ created: req.parsedBody })
 );
+
+// ── Route groups ─────────────────────────────────────────
+app.group("/v1", (r) => {
+  r.get("/status", () => ({ version: 1, ok: true }));
+});
+
+// ── Streaming ─────────────────────────────────────────────
+app.get("/ai", stream(async function*() {
+  yield "Hello ";
+  yield "World!";
+}));
 
 // ── Cron ──────────────────────────────────────────────────
 cron("* * * * *", () => console.log("💓 heartbeat"));
@@ -492,7 +672,7 @@ bun test
 
 <div align="center">
 
-**PrinceJS: 5.1kB. Hono-speed. Everything included. 👑**
+**PrinceJS: 6.3kB. Hono-speed. Everything included. 👑**
 
 *Built with ❤️ in Nigeria*
 
