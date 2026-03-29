@@ -386,6 +386,16 @@ export interface RouteOperation {
   [key: string]: unknown;
 }
 
+// guard() — apply body validation to a group of routes.
+// Use as shared middleware in app.group():
+//   app.group("/users", guard({ body: userSchema }), (r) => { ... })
+// or standalone:
+//   app.post("/users", guard({ body: userSchema }), handler)
+export function guard(schema: { body?: z.ZodTypeAny }): Middleware {
+  if (!schema.body) return (_req, next) => next();
+  return validate(schema.body) as unknown as Middleware;
+}
+
 // GroupRouter — returned by app.group(), scoped to the prefix
 export interface GroupRouter {
   get(path: string, ...args: (RouteHandler | Middleware)[]): GroupRouter;

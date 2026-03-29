@@ -558,3 +558,67 @@ export const jwks = (jwksUrl: string, options?: { algorithms?: string[] }) => {
     return next();
   };
 };
+
+// === TRIM TRAILING SLASH ===
+// Redirects /users/ → /users with a 301/302. Does nothing for root "/".
+export const trimTrailingSlash = (statusCode: 301 | 302 = 301) => {
+  return async (req: PrinceRequest, next: Next) => {
+    const url = new URL(req.url);
+    const pathname = url.pathname;
+    // Don't redirect the root path
+    if (pathname !== '/' && pathname.endsWith('/')) {
+      // Remove trailing slash
+      url.pathname = pathname.slice(0, -1);
+      const redirectLocation = url.toString();
+      return new Response(null, {
+        status: statusCode,
+        headers: { Location: redirectLocation },
+      });
+    }
+    return next();
+  };
+};
+
+// === MIDDLEWARE COMBINATORS ===
+
+// every(mw1, mw2) — all middleware must pass (short-circuits on first rejection)
+export const every = (...middlewares: ((req: PrinceRequest, next: Next) => any)[]) => {
+  return async (req: PrinceRequest, next: Next) => {
+    let idx = 0;
+    const run = async (): Promise<Response> => {
+      if (idx >= middlewares.length) return next();
+      const mw = middlewares[idx++];
+      return mw(req, run);
+    };
+    return run();
+  };
+};
+
+// some(mw1, mw2) — first middleware to call next() wins; if all reject, returns last rejection
+export const some = (...middlewares: ((req: PrinceRequest, next: Next) => any)[]) => {
+  return async (req: PrinceRequest, next: Next) => {
+    let lastRejection: Response | undefined;
+    for (const mw of middlewares) {
+      let passed = false;
+      const result = await mw(req, async () => { passed = true; return next(); });
+      if (passed) return result;
+      lastRejection = result;
+    }
+    return lastRejection!;
+  };
+};
+
+// except(path, mw) — applies middleware to all paths EXCEPT the given one (or array of paths)
+export const except = (paths: string | string[], ...middlewares: ((req: PrinceRequest, next: Next) => any)[]) => {
+  const excluded = new Set(Array.isArray(paths) ? paths : [paths]);
+  const combined = every(...middlewares);
+  return async (req: PrinceRequest, next: Next) => {
+    const url = req.url;
+    const ss = url.indexOf("//");
+    const pathStart = ss === -1 ? 0 : url.indexOf("/", ss + 2);
+    const qIdx = url.indexOf("?", pathStart);
+    const pathname = pathStart === -1 ? "/" : (qIdx === -1 ? url.slice(pathStart) : url.slice(pathStart, qIdx));
+    if (excluded.has(pathname)) return next();
+    return combined(req, next);
+  };
+};

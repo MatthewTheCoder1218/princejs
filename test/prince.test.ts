@@ -1,7 +1,7 @@
 // test/prince.test.ts
 import { describe, test, expect, beforeEach, afterEach, jest, it, spyOn } from "bun:test";
-import { prince } from "../src/prince";
-import { jwt, signJWT, rateLimit, validate, cors, logger, auth, apiKey, compress, session, secureHeaders, timeout, requestId, ipRestriction, serveStatic } from "../src/middleware";
+import { prince, guard } from "../src/prince";
+import { jwt, signJWT, rateLimit, validate, cors, logger, auth, apiKey, compress, session, secureHeaders, timeout, requestId, ipRestriction, serveStatic, trimTrailingSlash, every, some, except } from "../src/middleware";
 import { cache, email, upload, sse, stream } from "../src/helpers";
 import { openapi, cron } from "../src/scheduler";
 import { db } from "../src/db";
@@ -4045,5 +4045,293 @@ describe("Helper - stream", () => {
     const res = await app.fetch(new Request("http://localhost/async"));
     const text = await res.text();
     expect(text).toBe("hello async");
+  });
+});
+// ==========================================
+// TRIM TRAILING SLASH
+// ==========================================
+
+describe("Middleware - trimTrailingSlash", () => {
+  test("redirects trailing slash with 301 by default", async () => {
+    const app = prince();
+    app.use(trimTrailingSlash());
+    app.get("/users", () => ({ users: [] }));
+
+    const res = await app.fetch(new Request("http://localhost/users/", { redirect: "manual" }));
+    expect(res.status).toBe(301);
+    expect(res.headers.get("Location")).toBe("/users");
+  });
+
+  test("does not redirect root /", async () => {
+    const app = prince();
+    app.use(trimTrailingSlash());
+    app.get("/", () => ({ ok: true }));
+
+    const res = await app.fetch(new Request("http://localhost/"));
+    expect(res.status).toBe(200);
+  });
+
+  test("preserves query string in redirect", async () => {
+    const app = prince();
+    app.use(trimTrailingSlash());
+    app.get("/search", () => ({ ok: true }));
+
+    const res = await app.fetch(new Request("http://localhost/search/?q=test&page=2", { redirect: "manual" }));
+    expect(res.status).toBe(301);
+    expect(res.headers.get("Location")).toBe("/search?q=test&page=2");
+  });
+
+  test("supports 302 status code", async () => {
+    const app = prince();
+    app.use(trimTrailingSlash(302));
+    app.get("/users", () => ({ users: [] }));
+
+    const res = await app.fetch(new Request("http://localhost/users/", { redirect: "manual" }));
+    expect(res.status).toBe(302);
+  });
+
+  test("passes through paths without trailing slash", async () => {
+    const app = prince();
+    app.use(trimTrailingSlash());
+    app.get("/users", () => ({ users: [] }));
+
+    const res = await app.fetch(new Request("http://localhost/users"));
+    expect(res.status).toBe(200);
+  });
+
+  test("works with nested paths", async () => {
+    const app = prince();
+    app.use(trimTrailingSlash());
+    app.get("/api/v1/users", () => ({ ok: true }));
+
+    const res = await app.fetch(new Request("http://localhost/api/v1/users/", { redirect: "manual" }));
+    expect(res.status).toBe(301);
+    expect(res.headers.get("Location")).toBe("/api/v1/users");
+  });
+});
+
+// ==========================================
+// MIDDLEWARE COMBINATORS
+// ==========================================
+
+describe("Middleware - every()", () => {
+  test("passes when all middleware call next()", async () => {
+    const app = prince();
+    const mw1 = async (req: any, next: any) => { req.a = true; return next(); };
+    const mw2 = async (req: any, next: any) => { req.b = true; return next(); };
+    app.get("/", every(mw1, mw2), (req) => ({ a: req.a, b: req.b }));
+
+    const res = await app.fetch(new Request("http://localhost/"));
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.a).toBe(true);
+    expect(data.b).toBe(true);
+  });
+
+  test("short-circuits on first rejection", async () => {
+    const app = prince();
+    let secondRan = false;
+    const mw1 = async () => new Response(JSON.stringify({ error: "blocked" }), { status: 403 });
+    const mw2 = async (req: any, next: any) => { secondRan = true; return next(); };
+    app.get("/", every(mw1, mw2), () => ({ ok: true }));
+
+    const res = await app.fetch(new Request("http://localhost/"));
+    expect(res.status).toBe(403);
+    expect(secondRan).toBe(false);
+  });
+
+  test("works with real auth + role check", async () => {
+    const SECRET = new TextEncoder().encode("secret");
+    const app = prince();
+    const isAdmin = async (req: any, next: any) => {
+      if (req.user?.role !== "admin")
+        return new Response(JSON.stringify({ error: "Forbidden" }), { status: 403 });
+      return next();
+    };
+    app.use(jwt(SECRET));
+    app.get("/admin", every(auth(), isAdmin), () => ({ ok: true }));
+
+    const r1 = await app.fetch(new Request("http://localhost/admin"));
+    expect(r1.status).toBe(401);
+
+    const userToken = await signJWT({ role: "user" }, SECRET, "1h");
+    const r2 = await app.fetch(new Request("http://localhost/admin", {
+      headers: { Authorization: `Bearer ${userToken}` }
+    }));
+    expect(r2.status).toBe(403);
+
+    const adminToken = await signJWT({ role: "admin" }, SECRET, "1h");
+    const r3 = await app.fetch(new Request("http://localhost/admin", {
+      headers: { Authorization: `Bearer ${adminToken}` }
+    }));
+    expect(r3.status).toBe(200);
+  });
+});
+
+describe("Middleware - some()", () => {
+  test("passes when first middleware calls next()", async () => {
+    const app = prince();
+    const pass = async (req: any, next: any) => next();
+    const fail = async () => new Response(JSON.stringify({ error: "no" }), { status: 401 });
+    app.get("/", some(pass, fail), () => ({ ok: true }));
+
+    const res = await app.fetch(new Request("http://localhost/"));
+    expect(res.status).toBe(200);
+  });
+
+  test("tries next when first rejects", async () => {
+    const app = prince();
+    const fail = async () => new Response(JSON.stringify({ error: "no" }), { status: 401 });
+    const pass = async (req: any, next: any) => { (req as any).via = "second"; return next(); };
+    app.get("/", some(fail, pass), (req) => ({ via: (req as any).via }));
+
+    const res = await app.fetch(new Request("http://localhost/"));
+    expect(res.status).toBe(200);
+    expect((await res.json()).via).toBe("second");
+  });
+
+  test("returns last rejection if all fail", async () => {
+    const app = prince();
+    const fail1 = async () => new Response(JSON.stringify({ error: "401" }), { status: 401 });
+    const fail2 = async () => new Response(JSON.stringify({ error: "403" }), { status: 403 });
+    app.get("/", some(fail1, fail2), () => ({ ok: true }));
+
+    const res = await app.fetch(new Request("http://localhost/"));
+    expect(res.status).toBe(403);
+  });
+
+  test("accepts api key OR jwt", async () => {
+    const SECRET = new TextEncoder().encode("secret");
+    const app = prince();
+    app.use(jwt(SECRET));
+    app.get("/resource", some(apiKey({ keys: ["key123"] }), auth()), () => ({ ok: true }));
+
+    const r1 = await app.fetch(new Request("http://localhost/resource", {
+      headers: { "x-api-key": "key123" }
+    }));
+    expect(r1.status).toBe(200);
+
+    const token = await signJWT({ id: 1 }, SECRET, "1h");
+    const r2 = await app.fetch(new Request("http://localhost/resource", {
+      headers: { Authorization: `Bearer ${token}` }
+    }));
+    expect(r2.status).toBe(200);
+
+    const r3 = await app.fetch(new Request("http://localhost/resource"));
+    expect(r3.status).toBe(401);
+  });
+});
+
+describe("Middleware - except()", () => {
+  test("skips middleware for excluded path", async () => {
+    const app = prince();
+    const blocked = async () => new Response(JSON.stringify({ error: "blocked" }), { status: 401 });
+    app.use(except("/health", blocked));
+    app.get("/health", () => ({ ok: true }));
+    app.get("/secret", () => ({ secret: true }));
+
+    expect((await app.fetch(new Request("http://localhost/health"))).status).toBe(200);
+    expect((await app.fetch(new Request("http://localhost/secret"))).status).toBe(401);
+  });
+
+  test("accepts array of excluded paths", async () => {
+    const app = prince();
+    const blocked = async () => new Response(JSON.stringify({ error: "blocked" }), { status: 401 });
+    app.use(except(["/health", "/ping"], blocked));
+    app.get("/health", () => ({ ok: true }));
+    app.get("/ping",   () => ({ ok: true }));
+    app.get("/secret", () => ({ secret: true }));
+
+    expect((await app.fetch(new Request("http://localhost/health"))).status).toBe(200);
+    expect((await app.fetch(new Request("http://localhost/ping"))).status).toBe(200);
+    expect((await app.fetch(new Request("http://localhost/secret"))).status).toBe(401);
+  });
+
+  test("works with real auth middleware", async () => {
+    const SECRET = new TextEncoder().encode("secret");
+    const app = prince();
+    app.use(except(["/", "/health"], jwt(SECRET), auth()));
+    app.get("/",        () => ({ public: true }));
+    app.get("/health",  () => ({ ok: true }));
+    app.get("/private", (req) => ({ user: req.user?.id }));
+
+    expect((await app.fetch(new Request("http://localhost/"))).status).toBe(200);
+    expect((await app.fetch(new Request("http://localhost/health"))).status).toBe(200);
+    expect((await app.fetch(new Request("http://localhost/private"))).status).toBe(401);
+  });
+});
+
+// ==========================================
+// GUARD
+// ==========================================
+
+describe("guard()", () => {
+  test("validates body for all routes in a group", async () => {
+    const app = prince();
+    app.group("/users", guard({ body: z.object({ name: z.string().min(1) }) }), (r) => {
+      r.post("/create", (req) => ({ created: req.parsedBody.name }));
+    });
+
+    const good = await app.fetch(new Request("http://localhost/users/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Alice" })
+    }));
+    expect(good.status).toBe(200);
+    expect((await good.json()).created).toBe("Alice");
+
+    const bad = await app.fetch(new Request("http://localhost/users/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "" })
+    }));
+    expect(bad.status).toBe(400);
+  });
+
+  test("works as standalone route middleware", async () => {
+    const app = prince();
+    app.post("/items",
+      guard({ body: z.object({ name: z.string(), price: z.number() }) }),
+      (req) => ({ created: req.parsedBody })
+    );
+
+    const good = await app.fetch(new Request("http://localhost/items", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Widget", price: 9.99 })
+    }));
+    expect(good.status).toBe(200);
+
+    const bad = await app.fetch(new Request("http://localhost/items", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Widget" })
+    }));
+    expect(bad.status).toBe(400);
+  });
+
+  test("empty schema is a no-op pass-through", async () => {
+    const app = prince();
+    app.get("/", guard({}), () => ({ ok: true }));
+    const res = await app.fetch(new Request("http://localhost/"));
+    expect(res.status).toBe(200);
+  });
+
+  test("returns 400 with validation details on failure", async () => {
+    const app = prince();
+    app.post("/test",
+      guard({ body: z.object({ email: z.string().email() }) }),
+      () => ({ ok: true })
+    );
+
+    const res = await app.fetch(new Request("http://localhost/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "not-an-email" })
+    }));
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toBe("Validation failed");
+    expect(data.details).toBeDefined();
   });
 });
