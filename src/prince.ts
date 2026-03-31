@@ -920,7 +920,8 @@ async handleFetch(req: Request): Promise<Response> {
       if (pathname.length > 1 && pathname.endsWith("/")) {
         const search = extractSearch(rawUrl);
         const trimmed = pathname.slice(0, -1) + (search ? `?${search}` : "");
-        return new Response(null, { status: 301, headers: { Location: trimmed } });
+        const status = (this.middlewares.find((m: any) => m.__trimTrailingSlash) as any)?.__trimTrailingSlash ?? 301;
+        return new Response(null, { status, headers: { Location: trimmed } });
       }
       return this.json({ error: "Not Found" }, 404);
     }

@@ -62,7 +62,7 @@ app.listen(3000);
 | Feature | Import |
 |---------|--------|
 | Routing, Route Grouping, WebSockets, OpenAPI, Plugins, Lifecycle Hooks, Cookies, IP | `princejs` |
-| CORS, Logger, JWT, JWKS, Auth, Rate Limit, Validate, Compress, Session, API Key, Secure Headers, Timeout, Request ID, IP Restriction, Static Files | `princejs/middleware` |
+| CORS, Logger, JWT, JWKS, Auth, Rate Limit, Validate, Compress, Session, API Key, Secure Headers, Timeout, Request ID, IP Restriction, Static Files, Trim Trailing Slash, Middleware Combinators (`every`, `some`, `except`), `guard()` | `princejs/middleware` |
 | File Uploads, SSE, Streaming, In-memory Cache | `princejs/helpers` |
 | Cron Scheduler | `princejs/scheduler` |
 | JSX / SSR | `princejs/jsx` |
@@ -264,6 +264,90 @@ app.use(ipRestriction({ allowList: ["192.168.1.1", "10.0.0.1"] }));
 
 // Block these IPs
 app.use(ipRestriction({ denyList: ["1.2.3.4"] }));
+```
+
+---
+
+## ✂️ Trim Trailing Slash
+
+Automatically redirect `/users/` → `/users` so you never get mysterious 404s from a stray trailing slash:
+
+```ts
+import { trimTrailingSlash } from "princejs/middleware";
+
+app.use(trimTrailingSlash());        // 301 by default
+app.use(trimTrailingSlash(302));     // or 302 temporary redirect
+```
+
+Root `/` is never redirected. Query strings are preserved — `/search/?q=bun` → `/search?q=bun`.
+
+---
+
+## 🔀 Middleware Combinators
+
+Compose complex auth rules in a single readable line.
+
+### `every()` — all must pass
+
+```ts
+import { every } from "princejs/middleware";
+
+const isAdmin = async (req, next) => {
+  if (req.user?.role !== "admin")
+    return new Response(JSON.stringify({ error: "Forbidden" }), { status: 403 });
+  return next();
+};
+
+app.get("/admin", every(auth(), isAdmin), () => ({ ok: true }));
+// short-circuits on first rejection — isAdmin never runs if auth() fails
+```
+
+### `some()` — either must pass
+
+```ts
+import { some } from "princejs/middleware";
+
+// Accept a JWT token OR an API key — whichever the client sends
+app.get("/resource", some(auth(), apiKey({ keys: ["key_123"] })), () => ({ ok: true }));
+```
+
+### `except()` — skip middleware for certain paths
+
+```ts
+import { except } from "princejs/middleware";
+
+// Apply auth everywhere except /health and /
+app.use(except(["/health", "/"], auth()));
+
+app.get("/health", () => ({ ok: true }));   // no auth
+app.get("/private", (req) => ({ user: req.user })); // auth required
+```
+
+---
+
+## 🛡️ guard()
+
+Apply a validation schema to every route in a group at once — no need to repeat `validate()` on each handler:
+
+```ts
+import { guard } from "princejs/middleware";
+import { z } from "zod";
+
+app.group("/users", guard({ body: z.object({ name: z.string().min(1) }) }), (r) => {
+  r.post("/",      (req) => ({ created: req.parsedBody.name })); // auto-validated
+  r.put("/:id",    (req) => ({ updated: req.parsedBody.name })); // auto-validated
+});
+// Bad body → 400 { error: "Validation failed", details: [...] }
+```
+
+Also works as standalone route middleware:
+
+```ts
+app.post(
+  "/items",
+  guard({ body: z.object({ name: z.string(), price: z.number() }) }),
+  (req) => ({ created: req.parsedBody })
+);
 ```
 
 ---
@@ -537,6 +621,11 @@ import {
   secureHeaders,
   timeout,
   requestId,
+  trimTrailingSlash,
+  every,
+  some,
+  except,
+  guard,
 } from "princejs/middleware";
 import { cache, upload, sse, stream } from "princejs/helpers";
 import { cron } from "princejs/scheduler";
@@ -559,6 +648,7 @@ app.onError((err, req, path, method) => {
 // ── Global middleware ─────────────────────────────────────
 app.use(secureHeaders());
 app.use(requestId());
+app.use(trimTrailingSlash());
 app.use(timeout(10000));
 app.use(cors());
 app.use(logger());
@@ -600,6 +690,16 @@ app.ws("/chat", {
 // ── Auth & API keys ───────────────────────────────────────
 app.get("/protected", auth(), (req) => ({ user: req.user }));
 app.get("/api", apiKey({ keys: ["key_123"] }), () => ({ ok: true }));
+app.get("/admin", every(auth(), async (req, next) => {
+  if (req.user?.role !== "admin")
+    return new Response(JSON.stringify({ error: "Forbidden" }), { status: 403 });
+  return next();
+}), () => ({ admin: true }));
+
+// ── Validated route group ─────────────────────────────────
+app.group("/items", guard({ body: z.object({ name: z.string().min(1) }) }), (r) => {
+  r.post("/", (req) => ({ created: req.parsedBody.name }));
+});
 
 // ── Helpers ───────────────────────────────────────────────
 app.get("/cached",  cache(60)(() => ({ time: Date.now() })));
