@@ -560,23 +560,11 @@ export const jwks = (jwksUrl: string, options?: { algorithms?: string[] }) => {
 };
 
 // === TRIM TRAILING SLASH ===
-// Redirects /users/ → /users with a 301/302. Does nothing for root "/".
+// Redirects /users/ → /users with a 301. Does nothing for root "/".
 export const trimTrailingSlash = (statusCode: 301 | 302 = 301) => {
-  return async (req: PrinceRequest, next: Next) => {
-    const url = new URL(req.url);
-    const pathname = url.pathname;
-    // Don't redirect the root path
-    if (pathname !== '/' && pathname.endsWith('/')) {
-      // Remove trailing slash
-      url.pathname = pathname.slice(0, -1);
-      const redirectLocation = url.toString();
-      return new Response(null, {
-        status: statusCode,
-        headers: { Location: redirectLocation },
-      });
-    }
-    return next();
-  };
+  const mw = async (req: PrinceRequest, next: Next) => next();
+  (mw as any).__trimTrailingSlash = statusCode;
+  return mw;
 };
 
 // === MIDDLEWARE COMBINATORS ===

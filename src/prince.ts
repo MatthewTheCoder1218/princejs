@@ -903,7 +903,7 @@ export class Prince {
     return response;
   }
 
-  async handleFetch(req: Request): Promise<Response> {
+async handleFetch(req: Request): Promise<Response> {
     const rawUrl = req.url;
     const pathname = extractPathname(rawUrl);
     const r = req as PrinceRequest;
@@ -917,6 +917,11 @@ export class Prince {
     const routeMatch = this.findRoute(method, pathname);
     
     if (!routeMatch) {
+      if (pathname.length > 1 && pathname.endsWith("/")) {
+        const search = extractSearch(rawUrl);
+        const trimmed = pathname.slice(0, -1) + (search ? `?${search}` : "");
+        return new Response(null, { status: 301, headers: { Location: trimmed } });
+      }
       return this.json({ error: "Not Found" }, 404);
     }
 
@@ -933,7 +938,6 @@ export class Prince {
       );
     }
 
-    // Pass raw search string — URLSearchParams only allocated if req.query is accessed
     const search = extractSearch(rawUrl);
     return this.executeHandler(r, routeMatch.handler, routeMatch.params, search, routeMatch.middlewares, method, pathname);
   }
@@ -961,31 +965,6 @@ export class Prince {
     }
   }
 
-  /**
-   * Mounts an OpenAPI spec + Scalar UI onto this Prince app.
-   *
-   * Calling this method returns an `OpenAPIBuilder` whose `.route()` method
-   * registers a route on the Prince app **and** writes the matching path entry
-   * into the OpenAPI spec simultaneously — so the two can never drift.
-   *
-   * Two routes are auto-registered:
-   *   GET `docsPath`        → Scalar UI  (e.g. /docs)
-   *   GET `docsPath`.json   → Raw spec   (e.g. /docs.json)
-   *
-   * @example
-   * const app = prince();
-   * const api = app.openapi({ title: "My API", version: "1.0.0" }, "/docs");
-   *
-   * // Registers GET /hello on Prince AND adds it to the OpenAPI spec
-   * api.route("GET", "/hello", {
-   *   summary: "Say hello",
-   *   responses: { 200: { description: "OK" } },
-   * }, (req) => ({ message: "hello" }));
-   *
-   * app.listen(3000);
-   * // → GET /docs      → Scalar UI
-   * // → GET /docs.json → raw OpenAPI JSON
-   */
   openapi(
     info: { title: string; version: string },
     docsPath = "/docs",
