@@ -1052,11 +1052,11 @@ describe("Helper - upload", () => {
     
     app.post("/upload", upload());
 
-    const fileName = "test.txt";
-    const fileContent = "test content";
+    const fileName = "test.jpg";
+    const fileContent = "fake image data";
     
     const formData = new FormData();
-    const blob = new Blob([fileContent], { type: "text/plain" });
+    const blob = new Blob([fileContent], { type: "image/jpeg" });
     formData.append("file", blob, fileName);
     
     const res = await app.fetch(
@@ -1199,6 +1199,7 @@ describe("Database - SQLite", () => {
 
   test("db.get() returns single row", () => {
     const database = db.sqlite(testDbPath, `
+      DROP TABLE IF EXISTS users;
       CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT UNIQUE)
     `);
     
@@ -1875,6 +1876,7 @@ describe("Integration - Full Stack", () => {
   test("Complete API with auth, validation, and database", async () => {
     const app = prince();
     const database = db.sqlite(testDbPath, `
+      DROP TABLE IF EXISTS tasks;
       CREATE TABLE tasks (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         title TEXT NOT NULL,

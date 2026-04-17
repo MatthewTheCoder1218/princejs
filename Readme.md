@@ -62,8 +62,8 @@ app.listen(3000);
 | Feature | Import |
 |---------|--------|
 | Routing, Route Grouping, WebSockets, OpenAPI, Plugins, Lifecycle Hooks, Cookies, IP | `princejs` |
-| CORS, Logger, JWT, JWKS, Auth, Rate Limit, Validate, Compress, Session, API Key, Secure Headers, Timeout, Request ID, IP Restriction, Static Files, Trim Trailing Slash, Middleware Combinators (`every`, `some`, `except`), `guard()` | `princejs/middleware` |
-| File Uploads, SSE, Streaming, In-memory Cache | `princejs/helpers` |
+| CORS, Logger, JWT, JWKS, Auth, Rate Limit, Validate, Compress, Session, API Key, Secure Headers, CSRF Protection, Timeout, Request ID, IP Restriction, Static Files, Trim Trailing Slash, Middleware Combinators (`every`, `some`, `except`), `guard()` | `princejs/middleware` |
+| File Uploads, SSE, Streaming, In-memory Cache, Input Sanitization, Environment Validation, Response Helpers | `princejs/helpers` |
 | Cron Scheduler | `princejs/scheduler` |
 | JSX / SSR | `princejs/jsx` |
 | SQLite Database | `princejs/db` |
@@ -189,6 +189,108 @@ app
   .group("/v2", (r) => { r.get("/ping", () => ({ v: 2 })); });
 
 app.listen(3000);
+```
+
+---
+
+## 🛡️ CSRF Protection
+
+Protect your forms from Cross-Site Request Forgery attacks with built-in token generation and validation:
+
+```ts
+import { csrf } from "princejs/middleware";
+
+const app = prince();
+app.use(csrf());
+
+// GET form page — token is auto-included in response headers
+app.get("/form", (req) => ({
+  form: `<form method="post" action="/submit">
+    <input type="hidden" name="csrf" value="${req.csrfToken}">
+    <input type="text" name="message">
+    <button>Submit</button>
+  </form>`,
+}));
+
+// POST handler — CSRF token is automatically validated
+app.post("/submit", (req) => ({
+  ok: true,
+  message: req.parsedBody?.message,
+}));
+// Missing or invalid token → 403 Forbidden
+```
+
+Tokens are stored in `HttpOnly` secure cookies with `SameSite=Strict` to prevent token theft.
+
+---
+
+## 🧹 Input Sanitization
+
+Prevent XSS attacks by sanitizing user input before rendering to HTML:
+
+```ts
+import { sanitize } from "princejs/helpers";
+
+const userComment = `<img src=x onerror="alert('xss')">Looks great!`;
+
+// Remove script tags and event handlers
+const safe = sanitize(userComment, 'text');
+// → "Looks great!"
+
+// Allow basic HTML but no scripts
+const htmlSafe = sanitize(userComment, 'html');
+// → "<img src=x>Looks great!"
+
+// Validate URLs are safe
+const url = "javascript:alert('xss')";
+const safeUrl = sanitize(url, 'url');
+// → "" (invalid URL removed)
+```
+
+---
+
+## ✅ Environment Validation
+
+Fail fast at startup if required environment variables are missing:
+
+```ts
+import { validateEnv } from "princejs/helpers";
+
+// Throws error immediately if any variable is missing
+const env = validateEnv(["DATABASE_URL", "JWT_SECRET", "API_KEY"]);
+
+const db = connect(env.DATABASE_URL);
+const secret = new TextEncoder().encode(env.JWT_SECRET);
+const apiKey = env.API_KEY;
+```
+
+Prevents runtime errors from missing config in production deployments.
+
+---
+
+## 📨 Response Helpers
+
+Consistent error and success response formatting:
+
+```ts
+import { errorResponse, successResponse } from "princejs/helpers";
+
+app.get("/users/:id", async (req) => {
+  try {
+    const user = await findUser(req.params!.id);
+    if (!user) {
+      return errorResponse("User not found", 404);
+    }
+    return successResponse(user);
+  } catch (err) {
+    return errorResponse("Internal server error", 500);
+    // Note: error details are hidden from client for security
+  }
+});
+
+// Responses are JSON with consistent structure:
+// Success: { ok: true, data: {...}, statusCode: 200 }
+// Error:   { ok: false, error: "...", statusCode: 400 }
 ```
 
 ---
@@ -622,18 +724,22 @@ import {
   timeout,
   requestId,
   trimTrailingSlash,
+  csrf,
   every,
   some,
   except,
   guard,
 } from "princejs/middleware";
-import { cache, upload, sse, stream } from "princejs/helpers";
+import { cache, upload, sse, stream, sanitize, validateEnv, errorResponse, successResponse } from "princejs/helpers";
 import { cron } from "princejs/scheduler";
 import { Html, Head, Body, H1, P, render } from "princejs/jsx";
 import { db } from "princejs/db";
 import { z } from "zod";
 
-const SECRET = new TextEncoder().encode("your-secret");
+// ── Environment Validation ────────────────────────────────
+const env = validateEnv(["DATABASE_URL", "JWT_SECRET", "API_KEY"]);
+
+const SECRET = new TextEncoder().encode(env.JWT_SECRET);
 const app = prince();
 
 // ── Lifecycle hooks ───────────────────────────────────────
@@ -656,6 +762,7 @@ app.use(rateLimit(100, 60));
 app.use(jwt(SECRET));
 app.use(session({ secret: "session-secret" }));
 app.use(compress());
+app.use(csrf());
 
 // ── JSX SSR ───────────────────────────────────────────────
 const Page = () => Html(Head("Home"), Body(H1("Hello World"), P("Welcome!")));
@@ -683,7 +790,7 @@ app.get("/users", () => users.query("SELECT * FROM users"));
 // ── WebSockets ────────────────────────────────────────────
 app.ws("/chat", {
   open:    (ws) => ws.send("Welcome!"),
-  message: (ws, msg) => ws.send(`Echo: ${msg}`),
+  message: (ws, msg) => ws.send(`Echo: ${sanitize(msg as string, 'text')}`),
   close:   (ws) => console.log("disconnected"),
 });
 
@@ -692,13 +799,13 @@ app.get("/protected", auth(), (req) => ({ user: req.user }));
 app.get("/api", apiKey({ keys: ["key_123"] }), () => ({ ok: true }));
 app.get("/admin", every(auth(), async (req, next) => {
   if (req.user?.role !== "admin")
-    return new Response(JSON.stringify({ error: "Forbidden" }), { status: 403 });
+    return errorResponse("Forbidden", 403);
   return next();
 }), () => ({ admin: true }));
 
 // ── Validated route group ─────────────────────────────────
 app.group("/items", guard({ body: z.object({ name: z.string().min(1) }) }), (r) => {
-  r.post("/", (req) => ({ created: req.parsedBody.name }));
+  r.post("/", (req) => successResponse({ created: req.parsedBody.name }));
 });
 
 // ── Helpers ───────────────────────────────────────────────
@@ -716,7 +823,7 @@ app.get("/events",  sse(), (req) => {
 app.post(
   "/items",
   validate(z.object({ name: z.string().min(1), price: z.number().positive() })),
-  (req) => ({ created: req.parsedBody })
+  (req) => successResponse({ created: req.parsedBody })
 );
 
 // ── Cron ──────────────────────────────────────────────────

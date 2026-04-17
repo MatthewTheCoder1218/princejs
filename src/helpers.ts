@@ -37,7 +37,7 @@ export const email = async (to: string, subject: string, html: string) => {
     });
     
     if (!response.ok) {
-      const error = await response.json();
+      const error: any = await response.json();
       throw new Error(`Email send failed: ${error.message || response.statusText}`);
     }
     
