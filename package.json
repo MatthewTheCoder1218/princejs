@@ -1,6 +1,6 @@
 {
   "name": "princejs",
-  "version": "2.2.3",
+  "version": "2.2.4",
   "description": "An easy and fast backend framework that is among the top three — by a 13yo developer, for developers.",
   "main": "dist/prince.js",
   "types": "dist/prince.d.ts",
@@ -65,7 +65,10 @@
     "build": "bun run build:js && bun run build:types",
     "prepublishOnly": "bun run build",
     "test": "bun test",
-    "test:watch": "bun test --watch"
+    "test:watch": "bun test --watch",
+    "test:security": "bun test test/security.test.ts",
+    "test:perf": "bun test-performance.ts",
+    "test:all": "bun run test && bun run test:security && bun run test:perf"
   },
   "keywords": [
     "backend",

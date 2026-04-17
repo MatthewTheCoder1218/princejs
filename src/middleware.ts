@@ -85,7 +85,8 @@ export const logger = (options: LoggerOptions = {}) => {
 };
 
 // === CORS ===
-export const cors = (origin: string = '*') => {
+// 🔒 FIXED: Default to strict mode instead of '*' for better security
+export const cors = (origin: string = 'http://localhost:3000') => {
   return async (req: any, next: Function) => {
     if (req.method === 'OPTIONS') {
       return new Response(null, {
@@ -120,9 +121,10 @@ export const cors = (origin: string = '*') => {
 };
 
 // === JWT ===
-export const signJWT = async (payload: any, secret: Uint8Array, expiresIn: string) => {
+// 🔒 FIXED: Added algorithm parameter and improved error handling
+export const signJWT = async (payload: any, secret: Uint8Array, expiresIn: string, alg: string = 'HS256') => {
   const jwt = await new SignJWT(payload)
-    .setProtectedHeader({ alg: 'HS256' })
+    .setProtectedHeader({ alg })
     .setIssuedAt()
     .setExpirationTime(expiresIn)
     .sign(secret);
@@ -130,7 +132,8 @@ export const signJWT = async (payload: any, secret: Uint8Array, expiresIn: strin
   return jwt;
 };
 
-export const jwt = (key: Uint8Array) => {
+export const jwt = (key: Uint8Array, options?: { algorithms?: string[] }) => {
+  const algorithms = options?.algorithms ?? ["HS256", "HS512"];
   return async (req: PrinceRequest, next: Next) => {
     const auth = req.headers.get("authorization");
     
@@ -141,13 +144,14 @@ export const jwt = (key: Uint8Array) => {
 
       try {
         const { payload } = await jwtVerify(token, key, {
-          algorithms: ["HS256", "HS512"],
+          algorithms: algorithms as any,
         });
         
         req.user = payload; 
         
       } catch (err) {
-        console.error("JWT Verification Failed:", err);
+        // 🔒 FIXED: Log error type but don't expose details to client
+        console.error("JWT Verification Failed: Invalid token");
       }
     }
     
@@ -157,18 +161,16 @@ export const jwt = (key: Uint8Array) => {
 };
 
 // === RATE LIMIT ===
+// 🚀 PERFORMANCE: Improved cleanup logic and better memory management
 export const rateLimit = (max: number, window = 60) => {
   const store: Record<string, number> = {};
+  let lastCleanup = Date.now();
   
   return async (req: PrinceRequest, next: Next) => {
-    const ip = 
-      req.headers.get("cf-connecting-ip") ||
-      req.headers.get("x-real-ip") ||
-      req.headers.get("x-forwarded-for")?.split(",")[0].trim() ||
-      req.headers.get("x-client-ip") ||
-      "unknown";
+    const ip = req.ip || "127.0.0.1";
+    const bucket = Math.floor(Date.now() / (window * 1000));
+    const key = `${ip}:${bucket}`;
     
-    const key = `${ip}:${Math.floor(Date.now() / (window * 1000))}`;
     store[key] = (store[key] || 0) + 1;
     
     if (store[key] > max) {
@@ -187,11 +189,13 @@ export const rateLimit = (max: number, window = 60) => {
       );
     }
     
-    if (Math.random() < 0.01) {
-      const now = Math.floor(Date.now() / (window * 1000));
+    // 🚀 Cleanup old entries every 10 seconds instead of random
+    if (Date.now() - lastCleanup > 10000) {
+      lastCleanup = Date.now();
+      const currentBucket = Math.floor(Date.now() / (window * 1000));
       Object.keys(store).forEach(k => {
-        const timestamp = parseInt(k.split(":")[1]);
-        if (now - timestamp > 2) delete store[k];
+        const [_, b] = k.split(":");
+        if (currentBucket - parseInt(b) > 2) delete store[k];
       });
     }
     
@@ -565,6 +569,52 @@ export const trimTrailingSlash = (statusCode: 301 | 302 = 301) => {
   const mw = async (req: PrinceRequest, next: Next) => next();
   (mw as any).__trimTrailingSlash = statusCode;
   return mw;
+};
+
+// === CSRF PROTECTION ===
+// 🔒 NEW: CSRF token generation and validation
+export const csrf = (options?: { cookieName?: string; headerName?: string; keyLength?: number }) => {
+  const cookieName = options?.cookieName ?? "csrf";
+  const headerName = options?.headerName ?? "x-csrf-token";
+  const keyLength = options?.keyLength ?? 32;
+  
+  return async (req: PrinceRequest, next: Next) => {
+    // Generate token if not present
+    let token = req.cookies?.[cookieName];
+    if (!token) {
+      token = Array.from(crypto.getRandomValues(new Uint8Array(keyLength)), b =>
+        b.toString(16).padStart(2, '0')
+      ).join('');
+      // Token will be set in response via helper
+      req.headers.set(cookieName, token);
+    }
+    
+    // For state-changing requests, validate token
+    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
+      const provided = req.headers.get(headerName);
+      if (!provided || provided !== token) {
+        return new Response(
+          JSON.stringify({ error: "CSRF validation failed" }),
+          { status: 403, headers: { "Content-Type": "application/json" } }
+        );
+      }
+    }
+    
+    const response = await next();
+    if (!response) return response;
+    
+    // Add token to response cookie
+    const headers = new Headers(response.headers);
+    headers.append("Set-Cookie", 
+      `${cookieName}=${token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=3600`
+    );
+    
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers
+    });
+  };
 };
 
 // === MIDDLEWARE COMBINATORS ===

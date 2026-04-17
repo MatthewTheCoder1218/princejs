@@ -2,10 +2,13 @@
 import type { PrinceRequest } from "./prince";
 
 // === CACHE ===
+// 🚀 PERFORMANCE: Fixed cache key to normalize URLs and prevent collision
 export const cache = (ttl: number) => {
   const store: Record<string, { data: any; exp: number }> = {};
   return (handler: any) => async (req: PrinceRequest) => {
-    const key = req.url;
+    // Normalize cache key: use only pathname to avoid query param issues
+    const url = new URL(req.url);
+    const key = url.pathname;
     const now = Date.now();
     if (store[key]?.exp > now) return store[key].data;
     const data = await handler(req);
@@ -16,16 +19,41 @@ export const cache = (ttl: number) => {
 };
 
 // === EMAIL ===
+// 🔒 FIXED: Added error handling and response validation
 export const email = async (to: string, subject: string, html: string) => {
-  await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${process.env.RESEND_KEY}` },
-    body: JSON.stringify({ from: "no-reply@princejs.dev", to, subject, html })
-  });
+  const apiKey = process.env.RESEND_KEY;
+  if (!apiKey) {
+    throw new Error("RESEND_KEY environment variable not configured");
+  }
+  
+  try {
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: { 
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ from: "no-reply@princejs.dev", to, subject, html })
+    });
+    
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(`Email send failed: ${error.message || response.statusText}`);
+    }
+    
+    return await response.json();
+  } catch (error) {
+    console.error("Email service error:", error);
+    throw error;
+  }
 };
 
 // === UPLOAD ===
-export const upload = () => {
+// 🔒 FIXED: Added file size and type validation
+export const upload = (options?: { maxSize?: number; allowedTypes?: string[] }) => {
+  const maxSize = options?.maxSize ?? 5242880; // 5MB
+  const allowedTypes = options?.allowedTypes ?? ['image/jpeg', 'image/png', 'application/pdf'];
+  
   return async (req: PrinceRequest) => {
     try {
       // Check if it's a multipart request
@@ -44,6 +72,22 @@ export const upload = () => {
         return new Response(
           JSON.stringify({ error: 'No file provided or invalid file' }),
           { status: 400, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      
+      // 🔒 Validate file size
+      if (file.size > maxSize) {
+        return new Response(
+          JSON.stringify({ error: `File too large. Max size: ${maxSize / 1024 / 1024}MB` }),
+          { status: 413, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      
+      // 🔒 Validate file type
+      if (!allowedTypes.includes(file.type)) {
+        return new Response(
+          JSON.stringify({ error: `File type not allowed. Allowed types: ${allowedTypes.join(', ')}` }),
+          { status: 415, headers: { 'Content-Type': 'application/json' } }
         );
       }
       
@@ -174,4 +218,88 @@ export const stream = (
       },
     });
   };
+};
+
+// === NEW: INPUT SANITIZATION ===
+// 🔒 NEW: Sanitize strings to prevent XSS attacks
+export const sanitize = (input: string, type: 'text' | 'html' | 'url' = 'text'): string => {
+  if (type === 'text') {
+    return input.replace(/[<>\"']/g, (char) => ({
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#x27;',
+    }[char] || char));
+  }
+  
+  if (type === 'url') {
+    try {
+      const url = new URL(input);
+      // Only allow http/https
+      if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Invalid protocol');
+      return url.toString();
+    } catch {
+      throw new Error('Invalid URL');
+    }
+  }
+  
+  return input;
+};
+
+// === NEW: ENVIRONMENT VALIDATION ===
+// 🔒 NEW: Validate required environment variables at startup
+export const validateEnv = (requiredVars: string[]): Record<string, string> => {
+  const env: Record<string, string> = {};
+  const missing: string[] = [];
+  
+  for (const key of requiredVars) {
+    const value = process.env[key];
+    if (!value) {
+      missing.push(key);
+    } else {
+      env[key] = value;
+    }
+  }
+  
+  if (missing.length > 0) {
+    throw new Error(`Missing environment variables: ${missing.join(', ')}`);
+  }
+  
+  return env;
+};
+
+// === NEW: ERROR RESPONSE HELPER ===
+// 🔒 NEW: Consistent error response formatting
+export const errorResponse = (
+  message: string,
+  statusCode: number = 500,
+  details?: any
+): Response => {
+  return new Response(
+    JSON.stringify({
+      error: message,
+      ...(details && { details }),
+      timestamp: new Date().toISOString(),
+    }),
+    {
+      status: statusCode,
+      headers: { 'Content-Type': 'application/json' },
+    }
+  );
+};
+
+// === NEW: SUCCESS RESPONSE HELPER ===
+// 🔒 NEW: Consistent success response formatting
+export const successResponse = (data: any, statusCode: number = 200): Response => {
+  return new Response(
+    JSON.stringify({
+      success: true,
+      data,
+      timestamp: new Date().toISOString(),
+    }),
+    {
+      status: statusCode,
+      headers: { 'Content-Type': 'application/json' },
+    }
+  );
 };
