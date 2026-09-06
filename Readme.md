@@ -155,6 +155,37 @@ app.post("/admin", (req) => {
 
 ---
 
+## 🔐 Sessions
+
+Signed, cookie-based sessions — no database required. Your `secret` signs the session id so clients can't forge or tamper with it.
+
+```ts
+import { session } from "princejs/middleware";
+
+const app = prince();
+app.use(session({ secret: process.env.SESSION_SECRET! }));
+
+app.post("/login", (req) => {
+  req.session.userId = "user_123";
+  return { ok: true };
+});
+
+app.get("/me", (req) => ({
+  userId: req.session.userId,
+}));
+
+app.post("/logout", (req) => {
+  req.session.destroy(); // end the session
+  return { ok: true };
+});
+```
+
+- **&nbsp;** The `prince.sid` cookie holds `id.signature` — an HMAC-SHA256 of the session id signed with your secret. A tampered cookie starts a fresh session instead of hijacking a real one.
+- **&nbsp;** Session data lives in an in-memory store and expires after `maxAge` (seconds, default `3600`).
+- **&nbsp;** Options: `secret` (required), `maxAge`, `name` (cookie name, default `prince.sid`).
+
+---
+
 
 ## 🗂️ Route Grouping
 
@@ -195,7 +226,7 @@ app.listen(3000);
 
 ## 🛡️ CSRF Protection
 
-Protect your forms from Cross-Site Request Forgery attacks with built-in token generation and validation:
+Double-submit cookie protection built in — blocks Cross-Site Request Forgery with no server-side state:
 
 ```ts
 import { csrf } from "princejs/middleware";
@@ -203,24 +234,64 @@ import { csrf } from "princejs/middleware";
 const app = prince();
 app.use(csrf());
 
-// GET form page — token is auto-included in response headers
-app.get("/form", (req) => ({
-  form: `<form method="post" action="/submit">
-    <input type="hidden" name="csrf" value="${req.csrfToken}">
-    <input type="text" name="message">
-    <button>Submit</button>
-  </form>`,
-}));
-
-// POST handler — CSRF token is automatically validated
 app.post("/submit", (req) => ({
   ok: true,
-  message: req.parsedBody?.message,
+  comment: req.parsedBody?.comment,
 }));
-// Missing or invalid token → 403 Forbidden
 ```
 
-Tokens are stored in `HttpOnly` secure cookies with `SameSite=Strict` to prevent token theft.
+**How it works:**
+
+1. PrinceJS sets a `csrf=<token>` cookie on the first request. The cookie is **not** `HttpOnly` — client JS must be able to read it.
+2. On every `POST` / `PUT` / `PATCH` / `DELETE`, the token must be echoed back via the `X-CSRF-Token` header. Missing or mismatched → **403**.
+3. Responses rotate the `csrf` cookie (`SameSite=Strict`, 1h expiry).
+
+```js
+// Client-side: read the cookie and send it back as a header
+const token = document.cookie
+  .split("; ")
+  .find((c) => c.startsWith("csrf="))
+  ?.split("=")[1];
+
+await fetch("/submit", {
+  method: "POST",
+  credentials: "include",
+  headers: { "Content-Type": "application/json", "x-csrf-token": token },
+  body: JSON.stringify({ comment: "hi" }),
+});
+```
+
+For a server-rendered form, read the token via `req.cookies?.csrf` and have a tiny JS submit handler forward it to the header:
+
+```ts
+app.get("/form", (req) => ({
+  html: `
+    <form id="f" method="POST" action="/submit">
+      <input type="hidden" name="csrf_token" value="${req.cookies?.csrf ?? ""}">
+      <input type="text" name="comment">
+      <button>Post</button>
+    </form>
+    <script>
+      const token = document.cookie.match(/(?:^|;\\s*)csrf=([^;]+)/)?.[1];
+      document.getElementById("f").addEventListener("submit", (e) => {
+        e.preventDefault();
+        fetch("/submit", {
+          method: "POST",
+          headers: { "x-csrf-token": token },
+          body: new FormData(document.getElementById("f")),
+        });
+      });
+    <\/script>`,
+}));
+```
+
+By default the token cookie is sent without `Secure`, so it works over plain `http://localhost` during development. Enable `Secure` in production:
+
+```ts
+app.use(csrf({ secure: true })); // requires HTTPS
+```
+
+Options: `cookieName` (default `csrf`), `headerName` (default `x-csrf-token`), `keyLength` (default 32), `secure` (default false).
 
 ---
 
@@ -381,6 +452,8 @@ app.use(trimTrailingSlash());        // 301 by default
 app.use(trimTrailingSlash(302));     // or 302 temporary redirect
 ```
 
+Trailing-slash redirects are **opt-in** — without this middleware, `/users/` is simply a 404.
+
 Root `/` is never redirected. Query strings are preserved — `/search/?q=bun` → `/search?q=bun`.
 
 ---
@@ -466,6 +539,8 @@ app.use(serveStatic("./public"));
 // → GET /               serves ./public/index.html
 // → GET /api/users      falls through to your route handler
 ```
+
+Runs on Bun, Node, Deno and Cloudflare Workers, and is path-traversal safe — `../` can never escape the root directory.
 
 ---
 
@@ -862,6 +937,20 @@ bun add princejs
 # or
 npm install princejs
 ```
+
+> `zod` and `jose` are installed automatically — no extra setup required.
+
+**Run it on other runtimes too:**
+
+- Bun is the native runtime — `app.listen()` and `princejs/db` (which uses `bun:sqlite`) require Bun.
+- Everything else — routing, middleware, helpers, JSX — runs on **Node.js, Deno, and Cloudflare Workers**. Both ESM `import` and CommonJS `require()` work from Node ≥ 20.17 (or 22+).
+- Use an adapter for a server entry point on another runtime:
+  - Node: `princejs/node` (`toNode`, `toExpress`)
+  - Vercel: `princejs/vercel`
+  - Cloudflare Workers: `princejs/cloudflare`
+  - Deno: `princejs/deno`
+
+Calling `db.sqlite()` outside Bun throws a clear error instead of crashing your app at import time.
 
 ---
 

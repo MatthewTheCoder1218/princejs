@@ -15,7 +15,11 @@ export const jsx = (tag: string | Function, props: JSXProps, ...children: any[])
     .map(([key, value]) => ` ${key}="${String(value).replace(/"/g, '&quot;')}"`)
     .join('');
 
-  const content = children.flat().filter(Boolean).join('');
+  const content = children
+    .flat()
+    .filter(Boolean)
+    .map((c) => (typeof c === 'string' ? c : JSON.stringify(c)))
+    .join('');
   
   return `<${tag}${attrs}>${content}</${tag}>`;
 };
@@ -88,10 +92,14 @@ export const render = (jsxContent: any) => {
 const renderChildren = (children: any): string => {
   if (!children) return '';
   if (Array.isArray(children)) return children.map(renderChildren).join('');
+  if (typeof children === 'function') {
+    const out = (children as () => any)();
+    if (out == null) return '';
+    return typeof out === 'string' ? out : JSON.stringify(out);
+  }
   if (typeof children === 'object') {
-    const rendered = render(children);
-    // Extract HTML string from Response
-    return typeof rendered === 'string' ? rendered : '';
+    // Never silently drop object children — surface them as JSON.
+    return JSON.stringify(children);
   }
   return String(children);
 };

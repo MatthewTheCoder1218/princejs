@@ -35,9 +35,9 @@ const app = prince();
 app.use(session({ secret: process.env.SESSION_SECRET! }));
 app.use(csrf());
 
-// ✅ GET endpoint - returns form with token
+// ✅ GET endpoint - returns form with token from the csrf cookie
 app.get("/form", (req) => {
-  const token = req.headers.get("csrf") || "";
+  const token = req.cookies?.csrf ?? "";
   return {
     html: `
       <form method="POST" action="/submit">
@@ -45,15 +45,28 @@ app.get("/form", (req) => {
         <input type="text" name="comment">
         <button type="submit">Post</button>
       </form>
+      <script>
+        const token = document.cookie.match(/(?:^|;\\s*)csrf=([^;]+)/)?.[1];
+        document.querySelector("form").addEventListener("submit", (e) => {
+          e.preventDefault();
+          fetch("/submit", {
+            method: "POST",
+            headers: { "x-csrf-token": token },
+            body: new FormData(e.target),
+          });
+        });
+      <\/script>
     `
   };
 });
 
-// ✅ POST endpoint - token auto-validated by middleware
+// ✅ POST endpoint - token validated against the cookie by the middleware
 app.post("/submit", (req) => {
   return { success: true, comment: req.parsedBody };
 });
 ```
+
+> The `csrf` token cookie is deliberately **not** `HttpOnly` — client JS reads it and echoes it back in the `X-CSRF-Token` header on state-changing requests. Missing or mismatched header → `403`.
 
 ### JavaScript/SPA Form Submission
 

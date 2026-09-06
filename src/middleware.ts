@@ -1,9 +1,12 @@
 // princejs/middleware.ts
-// @ts-nocheck 
 import type { PrinceRequest } from "./prince";
 import { z } from "zod";
 import { jwtVerify, SignJWT } from "jose";
+import { createHmac, randomUUID } from "node:crypto";
+import { extname, normalize, resolve } from "node:path";
+import { readFile } from "node:fs/promises";
 
+const normalizePath = (p: string) => normalize(resolve(p).replace(/\\/g, "/")).replace(/\/$/, "");
 type Next = () => Promise<Response | undefined>;
 type HandlerReturn = Response | { [key: string]: any } | undefined;
 
@@ -36,6 +39,7 @@ export const logger = (options: LoggerOptions = {}) => {
 
     try {
       const res = await next();
+      if (!res) return res;
       const duration = Date.now() - start;
 
       // 👇 Skip logging unless it's an error
@@ -194,8 +198,11 @@ export const rateLimit = (max: number, window = 60) => {
       lastCleanup = Date.now();
       const currentBucket = Math.floor(Date.now() / (window * 1000));
       Object.keys(store).forEach(k => {
-        const [_, b] = k.split(":");
-        if (currentBucket - parseInt(b) > 2) delete store[k];
+        // Key format: `ip:bucket` — but IPv6 addresses contain ":" (e.g. "::1:12345").
+        // Use the LAST colon so IPv6 IPs still parse the bucket correctly.
+        const lastColon = k.lastIndexOf(":");
+        const bucket = parseInt(k.slice(lastColon + 1), 10);
+        if (!Number.isNaN(bucket) && currentBucket - bucket > 2) delete store[k];
       });
     }
     
@@ -348,22 +355,44 @@ export const compress = (options?: {
         !contentType.includes("xml")) {
       return response;
     }
+
+    // NEVER buffer streaming/event-stream bodies — await arrayBuffer/text() on an
+    // endless stream (SSE, chunked output) hangs the request forever.
+    if (
+      contentType.includes("event-stream") ||
+      contentType.includes("octet-stream") ||
+      contentType.startsWith("multipart/")
+    ) {
+      return response;
+    }
     
+    // Do not double-compress responses that already claim an encoding.
+    if (response.headers.get("content-encoding")) return response;
+
     const acceptEncoding = req.headers.get("accept-encoding") || "";
     
     if (!acceptEncoding.includes("gzip") && !acceptEncoding.includes("br")) {
       return response;
     }
     
-    const body = await response.text();
+    const body = await response.arrayBuffer();
     
-    if (body.length < threshold) {
-      return new Response(body, response);
+    if (body.byteLength < threshold) {
+      return new Response(body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      });
     }
     
-    const compressed = Bun.gzipSync(new TextEncoder().encode(body));
+    // Bun.gzipSync for the Bun runtime, node:zlib everywhere else (Node/Deno via
+    // node compatibility). Keeps the middleware portable across runtimes.
+    const gzip = (globalThis as any).Bun?.gzipSync
+      ?? (await import("node:zlib")).gzipSync;
+    const compressed = gzip(new Uint8Array(body));
     
     const headers = new Headers(response.headers);
+    headers.delete("Content-Length");
     headers.set("Content-Encoding", "gzip");
     headers.set("Content-Length", String(compressed.length));
     
@@ -376,6 +405,9 @@ export const compress = (options?: {
 };
 
 // === SESSION ===
+const signSession = (secret: string, value: string) =>
+  createHmac("sha256", secret).update(value).digest("base64url");
+
 export const session = (options: { 
   secret: string; 
   maxAge?: number; 
@@ -385,7 +417,7 @@ export const session = (options: {
   const cookieName = options.name || "prince.sid";
   const maxAge = options.maxAge || 3600;
   
-  setInterval(() => {
+  const interval = setInterval(() => {
     const now = Date.now();
     for (const [id, data] of sessions.entries()) {
       if (data._expires && data._expires < now) {
@@ -393,20 +425,39 @@ export const session = (options: {
       }
     }
   }, 300_000);
+  // Don't let the cleanup timer keep the process alive.
+  (interval as any).unref?.();
   
+  const signedCookie = (id: string) =>
+    `${id}.${signSession(options.secret, id)}`;
+
   return async (req: PrinceRequest, next: Next) => {
     const cookies = req.headers.get("cookie");
     let sessionId: string | undefined;
     
     if (cookies) {
+      // Match an optionally-signed `id.signature` session cookie.
       const match = cookies.match(new RegExp(`${cookieName}=([^;]+)`));
-      sessionId = match?.[1];
+      const value = match?.[1];
+      if (value) {
+        const dot = value.indexOf(".");
+        const id = dot === -1 ? value : value.slice(0, dot);
+        const signature = dot === -1 ? undefined : value.slice(dot + 1);
+        // Only trust the session id if its signature verifies against the secret.
+        if (
+          signature !== undefined &&
+          signature === signSession(options.secret, id) &&
+          sessions.has(id)
+        ) {
+          sessionId = id;
+        }
+      }
     }
     
     if (sessionId && sessions.has(sessionId)) {
       req.session = sessions.get(sessionId);
     } else {
-      sessionId = crypto.randomUUID();
+      sessionId = randomUUID();
       req.session = { _expires: Date.now() + maxAge * 1000 };
     }
     
@@ -431,7 +482,7 @@ export const session = (options: {
       sessions.set(sessionId, req.session);
       
       headers.append("Set-Cookie", 
-        `${cookieName}=${sessionId}; Max-Age=${maxAge}; HttpOnly; SameSite=Lax; Path=/`
+        `${cookieName}=${signedCookie(sessionId)}; Max-Age=${maxAge}; HttpOnly; SameSite=Lax; Path=/`
       );
     }
     
@@ -521,20 +572,53 @@ export const ipRestriction = (options: { allowList?: string[]; denyList?: string
 };
 
 // === STATIC FILES ===
+const MIME_TYPES: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".css":  "text/css; charset=utf-8",
+  ".js":   "text/javascript; charset=utf-8",
+  ".mjs":  "text/javascript; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".txt":  "text/plain; charset=utf-8",
+  ".xml":  "application/xml; charset=utf-8",
+  ".png":  "image/png",
+  ".jpg":  "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif":  "image/gif",
+  ".svg":  "image/svg+xml",
+  ".webp": "image/webp",
+  ".ico":  "image/x-icon",
+  ".woff": "font/woff",
+  ".woff2":"font/woff2",
+  ".ttf":  "font/ttf",
+  ".pdf":  "application/pdf",
+};
+
+// Portable static file serving using node:fs — works under Bun, Node, Deno, and
+// Cloudflare's Node compat. Bun.file is bun-only; fs keeps this cross-runtime.
 export const serveStatic = (root: string) => {
-  const base = root.replace(/\/$/, "");
+  const base = normalizePath(root);
   return async (req: PrinceRequest, next: Next) => {
     if (req.method !== "GET" && req.method !== "HEAD") return next();
-    const pathname = new URL(req.url).pathname;
-    const filePath = base + pathname;
-    const file = Bun.file(filePath);
-    if (await file.exists()) {
-      return new Response(file);
-    }
-    // Try index.html for directory requests
-    if (!pathname.includes(".")) {
-      const index = Bun.file(filePath.replace(/\/$/, "") + "/index.html");
-      if (await index.exists()) return new Response(index);
+    const pathname = decodeURIComponent(new URL(req.url).pathname);
+    const filePath = normalizePath(pathname);
+    // Guard against path traversal ("/../secret.txt" must stay inside root).
+    if (!filePath.startsWith(base)) return next();
+
+    for (const candidate of [filePath, filePath + "/index.html"]) {
+      try {
+        const content = await readFile(candidate);
+        if (content !== undefined) {
+          const ext = extname(candidate).toLowerCase();
+          return new Response(content, {
+            status: 200,
+            headers: {
+              "Content-Type": MIME_TYPES[ext] ?? "application/octet-stream",
+            },
+          });
+        }
+      } catch {
+        // File not found or not readable, try next candidate.
+      }
     }
     return next();
   };
@@ -552,7 +636,6 @@ export const jwks = (jwksUrl: string, options?: { algorithms?: string[] }) => {
     if (auth?.startsWith("Bearer ")) {
       const token = auth.slice(7).trim();
       try {
-        const { jwtVerify } = await import("jose");
         const { payload } = await jwtVerify(token, JWKS, {
           algorithms: (options?.algorithms ?? ["RS256", "RS512", "ES256", "ES512"]) as any,
         });
@@ -572,24 +655,28 @@ export const trimTrailingSlash = (statusCode: 301 | 302 = 301) => {
 };
 
 // === CSRF PROTECTION ===
-// 🔒 NEW: CSRF token generation and validation
-export const csrf = (options?: { cookieName?: string; headerName?: string; keyLength?: number }) => {
+// Double-submit cookie pattern: the token is exposed in a (non-HttpOnly) cookie
+// so client JS can echo it back in the header for state-changing requests.
+export const csrf = (options?: { cookieName?: string; headerName?: string; keyLength?: number; secure?: boolean }) => {
   const cookieName = options?.cookieName ?? "csrf";
   const headerName = options?.headerName ?? "x-csrf-token";
   const keyLength = options?.keyLength ?? 32;
+  // False by default so it works over plain http dev servers (localhost).
+  const secure = options?.secure ?? false;
   
+  const generateToken = () =>
+    Array.from(
+      globalThis.crypto.getRandomValues(new Uint8Array(keyLength)),
+      (b) => b.toString(16).padStart(2, '0')
+    ).join('');
+
   return async (req: PrinceRequest, next: Next) => {
-    // Generate token if not present
     let token = req.cookies?.[cookieName];
-    if (!token) {
-      token = Array.from(crypto.getRandomValues(new Uint8Array(keyLength)), b =>
-        b.toString(16).padStart(2, '0')
-      ).join('');
-      // Token will be set in response via helper
-      req.headers.set(cookieName, token);
-    }
+    // Issued on first visit if absent — exposed in a non-HttpOnly cookie so
+    // client JS can echo it back via the header on state-changing requests.
+    if (!token) token = generateToken();
     
-    // For state-changing requests, validate token
+    // For state-changing requests, validate the double-submitted token.
     if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
       const provided = req.headers.get(headerName);
       if (!provided || provided !== token) {
@@ -603,10 +690,10 @@ export const csrf = (options?: { cookieName?: string; headerName?: string; keyLe
     const response = await next();
     if (!response) return response;
     
-    // Add token to response cookie
     const headers = new Headers(response.headers);
+    // Persist/rotate the token so the client always has a current value.
     headers.append("Set-Cookie", 
-      `${cookieName}=${token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=3600`
+      `${cookieName}=${token}; ${secure ? "Secure; " : ""}SameSite=Strict; Path=/; Max-Age=3600`
     );
     
     return new Response(response.body, {
@@ -623,7 +710,7 @@ export const csrf = (options?: { cookieName?: string; headerName?: string; keyLe
 export const every = (...middlewares: ((req: PrinceRequest, next: Next) => any)[]) => {
   return async (req: PrinceRequest, next: Next) => {
     let idx = 0;
-    const run = async (): Promise<Response> => {
+    const run = async (): Promise<Response | undefined> => {
       if (idx >= middlewares.length) return next();
       const mw = middlewares[idx++];
       return mw(req, run);

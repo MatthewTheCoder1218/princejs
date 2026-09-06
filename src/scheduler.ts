@@ -103,6 +103,35 @@ export interface OpenAPIBuilder {
   }) => void;
 }
 
+export const renderScalarHtml = (spec: OpenAPISpec, options: ScalarOptions = {}): string => {
+  const {
+    pageTitle = (spec.info.title as string) ?? "API Reference",
+    theme = "default",
+    layout = "modern",
+    hideDownloadButton = false,
+    customCss = "",
+  } = options;
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${pageTitle}</title>
+    ${customCss ? `<style>${customCss}</style>` : ""}
+  </head>
+  <body>
+    <script
+      id="api-reference"
+      type="application/json"
+      data-theme="${theme}"
+      data-layout="${layout}"
+      ${hideDownloadButton ? 'data-hide-download-button="true"' : ""}
+    >${JSON.stringify(spec)}</script>
+    <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"></script>
+  </body>
+</html>`;
+};
+
 /**
  * Creates an OpenAPI builder with a `.scalar()` and `.json()` route handler,
  * mirroring the Hono / @scalar/hono-api-reference middleware pattern —
@@ -126,36 +155,6 @@ export interface OpenAPIBuilder {
 export const openapi = (info: { title: string; version: string }): OpenAPIBuilder => {
   const spec: OpenAPISpec = { openapi: "3.0.0", info, paths: {} };
 
-  const renderScalarHtml = (options: ScalarOptions = {}): string => {
-    const {
-      pageTitle = spec.info.title as string,
-      theme = "default",
-      layout = "modern",
-      hideDownloadButton = false,
-      customCss = "",
-    } = options;
-
-    return `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>${pageTitle}</title>
-    ${customCss ? `<style>${customCss}</style>` : ""}
-  </head>
-  <body>
-    <script
-      id="api-reference"
-      type="application/json"
-      data-theme="${theme}"
-      data-layout="${layout}"
-      ${hideDownloadButton ? 'data-hide-download-button="true"' : ""}
-    >${JSON.stringify(spec)}</script>
-    <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"></script>
-  </body>
-</html>`;
-  };
-
   return {
     spec,
 
@@ -167,7 +166,7 @@ export const openapi = (info: { title: string; version: string }): OpenAPIBuilde
 
     scalar(options: ScalarOptions = {}) {
       return (_req: unknown, res: { writeHead: Function; end: Function }) => {
-        const html = renderScalarHtml(options);
+        const html = renderScalarHtml(spec, options);
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         res.end(html);
       };

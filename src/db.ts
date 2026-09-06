@@ -1,9 +1,24 @@
 // princejs/db.ts
 // 🔒 Database helpers with parameterized query support
-import { Database } from "bun:sqlite";
+import { createRequire } from "node:module";
+
+// bun:sqlite only exists under the Bun runtime. Guard the import so the module
+// still loads on Node/Deno/Cloudflare — calling db.sqlite() there throws a clear
+// error instead of crashing at import time with ERR_UNSUPPORTED_ESM_URL_SCHEME.
+let Database: any;
+try {
+  ({ Database } = createRequire(import.meta.url)("bun:sqlite"));
+} catch {
+  Database = undefined;
+}
 
 export const db = {
   sqlite: (path: string, init?: string) => {
+    if (!Database) {
+      throw new Error(
+        "princejs/db: bun:sqlite is only available when running under the Bun runtime."
+      );
+    }
     const db = new Database(path);
     if (init) db.run(init);
     

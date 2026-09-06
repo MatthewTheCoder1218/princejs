@@ -52,7 +52,7 @@ const app = prince(true); // dev mode enabled
 
 // Middleware
 app.use(cors());
-app.use(logger({ format: "dev" }));
+app.use(logger());
 
 // Routes
 app.get("/", () => {

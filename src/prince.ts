@@ -1,8 +1,7 @@
 // prince.ts - Complete framework with route-level middleware
-// @ts-nocheck 
 /// <reference types="bun-types" />
-import type { OpenAPISpec, OpenAPIBuilder, ScalarOptions } from "./scheduler";
-import { openapi as buildOpenAPI } from "./scheduler";
+import type { OpenAPIBuilder, ScalarOptions } from "./scheduler";
+import { openapi as buildOpenAPI, renderScalarHtml } from "./scheduler";
 import { z } from "zod";
 
 type Next = () => Promise<Response>;
@@ -411,7 +410,6 @@ export class Prince {
   private middlewares: Middleware[] = [];
   private errorHandler?: (err: any, req: PrinceRequest) => Response;
   private wsRoutes: Record<string, WebSocketHandler> = {};
-  private openapiSpec: OpenAPISpec | null = null;
   private router: RadixNode | null = null;
   private staticRoutes: Map<string, RouteHandler> = new Map();
   private staticMiddlewares: Map<string, Middleware[]> = new Map();
@@ -728,7 +726,7 @@ export class Prince {
   private matchRoute(node: RadixNode, segments: string[], method: string, params: Record<string, string> = {}, index = 0): { handler: RouteHandler; params: Record<string, string>; middlewares: Middleware[]; allowedMethods?: string[] } | null {
     if (index === segments.length) {
       const handler = node.handlers[method];
-      if (handler) {
+      if (typeof handler === "function") {
         // Use pre-baked composed array if available, else compose lazily
         const middlewares = node.composedMiddlewares[method]
           ?? this.composeMW(node.middlewares[method] ?? []);
@@ -773,7 +771,7 @@ export class Prince {
     for (const child of node.children) {
       if (child.isCatchAll) {
         const handler = child.handlers[method];
-        if (handler) {
+        if (typeof handler === "function") {
           const middlewares = child.composedMiddlewares[method]
             ?? this.composeMW(child.middlewares[method] ?? []);
           return { handler, params, middlewares };
@@ -917,11 +915,12 @@ async handleFetch(req: Request): Promise<Response> {
     const routeMatch = this.findRoute(method, pathname);
     
     if (!routeMatch) {
-      if (pathname.length > 1 && pathname.endsWith("/")) {
+      // Trailing-slash redirect only runs when trimTrailingSlash() was registered.
+      const trim = (this as any).middlewares.find((m: any) => m.__trimTrailingSlash);
+      if (trim && pathname.length > 1 && pathname.endsWith("/")) {
         const search = extractSearch(rawUrl);
         const trimmed = pathname.slice(0, -1) + (search ? `?${search}` : "");
-        const status = (this.middlewares.find((m: any) => m.__trimTrailingSlash) as any)?.__trimTrailingSlash ?? 301;
-        return new Response(null, { status, headers: { Location: trimmed } });
+        return new Response(null, { status: trim.__trimTrailingSlash, headers: { Location: trimmed } });
       }
       return this.json({ error: "Not Found" }, 404);
     }
@@ -959,8 +958,9 @@ async handleFetch(req: Request): Promise<Response> {
 
       if (this.errorHandler) return this.errorHandler(err, req as PrinceRequest);
       if (this.devMode) {
+        const e = err as Error;
         console.error("Error:", err);
-        return this.json({ error: String(err), stack: err.stack }, 500);
+        return this.json({ error: String(err), stack: e.stack }, 500);
       }
       return this.json({ error: "Internal Server Error" }, 500);
     }
@@ -972,7 +972,6 @@ async handleFetch(req: Request): Promise<Response> {
     scalarOptions: ScalarOptions = {}
   ): OpenAPIBuilder & { route: (method: string, path: string, operation: Record<string, unknown>, ...args: (RouteHandler | Middleware)[]) => OpenAPIBuilder } {
     const builder = buildOpenAPI(info);
-    this.openapiSpec = builder.spec;
 
     // Convert Prince path params (:id) to OpenAPI format ({id})
     const toOpenAPIPath = (p: string) => p.replace(/:([^/]+)/g, "{$1}");
@@ -980,7 +979,7 @@ async handleFetch(req: Request): Promise<Response> {
     // Serve Scalar UI
     this.get(docsPath, (req: PrinceRequest) => {
       return new Response(
-        renderScalarHTML(builder.spec, scalarOptions),
+        renderScalarHtml(builder.spec, scalarOptions),
         { headers: { "Content-Type": "text/html; charset=utf-8" } }
       );
     });
@@ -1064,6 +1063,13 @@ async handleFetch(req: Request): Promise<Response> {
     const router = this.buildRouter();
     this.composeRouterMiddlewares(router);
     this.composeStaticMiddlewares();
+
+    if (typeof (globalThis as any).Bun === "undefined") {
+      throw new Error(
+        "princejs: listen() requires the Bun runtime (Bun.serve). " +
+        "Use the node/vercel/cloudflare/deno adapters instead, or run under bun."
+      );
+    }
     
     Bun.serve({
       port,
@@ -1073,7 +1079,7 @@ async handleFetch(req: Request): Promise<Response> {
 
         if (self.wsRoutes[pathname] && server.upgrade(req, {
           data: { path: pathname }
-        })) {
+        } as any)) {
           return;
         }
         
@@ -1081,25 +1087,25 @@ async handleFetch(req: Request): Promise<Response> {
       },
       websocket: {
         open(ws) {
-          const path = ws.data?.path;
+          const path = (ws.data as any)?.path;
           if (path && self.wsRoutes[path]?.open) {
             self.wsRoutes[path].open!(ws);
           }
         },
         message(ws, message) {
-          const path = ws.data?.path;
+          const path = (ws.data as any)?.path;
           if (path && self.wsRoutes[path]?.message) {
             self.wsRoutes[path].message!(ws, message);
           }
         },
         close(ws, code, reason) {
-          const path = ws.data?.path;
+          const path = (ws.data as any)?.path;
           if (path && self.wsRoutes[path]?.close) {
             self.wsRoutes[path].close!(ws, code, reason);
           }
         },
         drain(ws) {
-          const path = ws.data?.path;
+          const path = (ws.data as any)?.path;
           if (path && self.wsRoutes[path]?.drain) {
             self.wsRoutes[path].drain!(ws);
           }
@@ -1109,37 +1115,6 @@ async handleFetch(req: Request): Promise<Response> {
 
     console.log(`🚀 PrinceJS running on http://localhost:${port}`);
   }
-}
-
-// Internal helper — renders Scalar HTML from a spec object.
-// Kept here (not imported) so prince.ts stays self-contained for the UI route.
-function renderScalarHTML(spec: OpenAPISpec, options: ScalarOptions = {}): string {
-  const {
-    pageTitle = (spec.info.title as string) ?? "API Reference",
-    theme = "default",
-    layout = "modern",
-    hideDownloadButton = false,
-    customCss = "",
-  } = options;
-  return `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>${pageTitle}</title>
-    ${customCss ? `<style>${customCss}</style>` : ""}
-  </head>
-  <body>
-    <script
-      id="api-reference"
-      type="application/json"
-      data-theme="${theme}"
-      data-layout="${layout}"
-      ${hideDownloadButton ? 'data-hide-download-button="true"' : ""}
-    >${JSON.stringify(spec)}</script>
-    <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"></script>
-  </body>
-</html>`;
 }
 
 export const prince = (dev = false) => new Prince(dev);

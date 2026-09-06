@@ -1,7 +1,7 @@
 // test/prince.test.ts
 import { describe, test, expect, beforeEach, afterEach, jest, it, spyOn } from "bun:test";
 import { prince, guard } from "../src/prince";
-import { jwt, signJWT, rateLimit, validate, cors, logger, auth, apiKey, compress, session, secureHeaders, timeout, requestId, ipRestriction, serveStatic, trimTrailingSlash, every, some, except } from "../src/middleware";
+import { jwt, signJWT, rateLimit, validate, cors, logger, auth, apiKey, compress, session, csrf, secureHeaders, timeout, requestId, ipRestriction, serveStatic, trimTrailingSlash, every, some, except } from "../src/middleware";
 import { cache, email, upload, sse, stream } from "../src/helpers";
 import { openapi, cron } from "../src/scheduler";
 import { db } from "../src/db";
@@ -4335,5 +4335,185 @@ describe("guard()", () => {
     const data = await res.json();
     expect(data.error).toBe("Validation failed");
     expect(data.details).toBeDefined();
+  });
+});
+
+// ==========================================
+// REGRESSION TESTS (bug-fix verification)
+// ==========================================
+
+describe("Regression - trailing slash is gated behind trimTrailingSlash()", () => {
+  test("returns 404 (not 301) without the middleware", async () => {
+    const app = prince();
+    app.get("/users", () => ({ users: [] }));
+
+    const res = await app.fetch(new Request("http://localhost/users/", { redirect: "manual" }));
+    expect(res.status).toBe(404);
+    expect(res.headers.get("Location")).toBeNull();
+  });
+
+  test("still redirects 301 when trimTrailingSlash() is registered", async () => {
+    const app = prince();
+    app.use(trimTrailingSlash());
+    app.get("/users", () => ({ users: [] }));
+
+    const res = await app.fetch(new Request("http://localhost/users/", { redirect: "manual" }));
+    expect(res.status).toBe(301);
+    expect(res.headers.get("Location")).toBe("/users");
+  });
+});
+
+describe("Regression - compression does not hang on SSE", () => {
+  test("text/event-stream responses pass through uncompressed and un-buffered", async () => {
+    const app = prince();
+    app.use(compress({ threshold: 10 }));
+    app.get("/events", () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("data: ping\n\n"));
+            // Intentionally never close — a real SSE stream stays open.
+          },
+        }),
+        { headers: { "Content-Type": "text/event-stream" } }
+      )
+    );
+
+    let timer: ReturnType<typeof setTimeout>;
+    const hangGuard = new Promise<Response>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("compress() hung on SSE stream")), 1000);
+    });
+
+    try {
+      const res = await Promise.race([
+        app.fetch(new Request("http://localhost/events", { headers: { "Accept-Encoding": "gzip" } })),
+        hangGuard,
+      ]);
+      expect(res.headers.get("Content-Encoding")).toBeNull();
+      expect(res.headers.get("Content-Type")).toBe("text/event-stream");
+    } finally {
+      clearTimeout(timer!);
+    }
+  });
+});
+
+describe("Regression - session cookie is signed with the secret", () => {
+  test("Set-Cookie carries an id.signature value", async () => {
+    const app = prince();
+    app.use(session({ secret: "s3cr3t", maxAge: 3600 }));
+    app.get("/inc", (req) => {
+      req.session.count = (req.session.count || 0) + 1;
+      return { count: req.session.count };
+    });
+
+    const res = await app.fetch(new Request("http://localhost/inc"));
+    const cookie = res.headers.get("Set-Cookie")!;
+    const value = cookie.match(/prince\.sid=([^;]+)/)?.[1]!;
+    expect(value).toContain(".");
+  });
+
+  test("rejects a tampered (forged-signature) cookie", async () => {
+    const app = prince();
+    app.use(session({ secret: "s3cr3t", maxAge: 3600 }));
+    app.get("/inc", (req) => {
+      req.session.count = (req.session.count || 0) + 1;
+      return { count: req.session.count };
+    });
+
+    const res1 = await app.fetch(new Request("http://localhost/inc"));
+    expect(await res1.json()).toEqual({ count: 1 });
+
+    const cookie = res1.headers.get("Set-Cookie")!;
+    const id = cookie.match(/prince\.sid=([^;]+)/)?.[1]!.split(".")[0];
+
+    // Same session id, wrong signature.
+    const res2 = await app.fetch(
+      new Request("http://localhost/inc", { headers: { Cookie: `prince.sid=${id}.deadbeef` } })
+    );
+    const data = await res2.json();
+    expect(data.count).toBe(1);
+  });
+});
+
+describe("Regression - CSRF double-submit flow", () => {
+  test("generates a non-HttpOnly token cookie and validates the header on POST", async () => {
+    const app = prince();
+    app.use(csrf());
+    app.get("/init", () => ({ ok: true }));
+    app.post("/submit", () => ({ ok: true }));
+
+    // Bootstrap: GET issues the token cookie (no HttpOnly, no Secure by default).
+    const bootstrap = await app.fetch(new Request("http://localhost/init"));
+    const setCookie = bootstrap.headers.get("Set-Cookie")!;
+    expect(setCookie).toContain("csrf=");
+    expect(setCookie.toLowerCase()).not.toContain("httponly");
+    expect(setCookie.toLowerCase()).not.toContain("secure;");
+    const token = setCookie.match(/csrf=([^;]+)/)?.[1];
+
+    // POST without the matching header is rejected.
+    const blocked = await app.fetch(
+      new Request("http://localhost/submit", {
+        method: "POST",
+        headers: { Cookie: `csrf=${token}`, "Content-Type": "application/json" },
+        body: "{}",
+      })
+    );
+    expect(blocked.status).toBe(403);
+
+    // POST with matching header passes.
+    const allowed = await app.fetch(
+      new Request("http://localhost/submit", {
+        method: "POST",
+        headers: { Cookie: `csrf=${token}`, "x-csrf-token": token, "Content-Type": "application/json" },
+        body: "{}",
+      })
+    );
+    expect(allowed.status).toBe(200);
+    expect(await allowed.json()).toEqual({ ok: true });
+  });
+
+  test("csrf({ secure: true }) adds the Secure flag", async () => {
+    const app = prince();
+    app.use(csrf({ secure: true }));
+    app.get("/", () => ({ ok: true }));
+
+    const res = await app.fetch(new Request("http://localhost/"));
+    const setCookie = res.headers.get("Set-Cookie")!;
+    expect(setCookie.toLowerCase()).toContain("secure;");
+  });
+});
+
+describe("Regression - JSX object children are not dropped", () => {
+  test("Div renders a raw object child as JSON instead of dropping it", () => {
+    const html = Div(null, { name: "Alice" }, P("hi"));
+    expect(html).toBe(`<div>{"name":"Alice"}<p>hi</p></div>`);
+  });
+
+  test("H1 renders an object child instead of dropping it", () => {
+    const html = H1({ count: 2 });
+    expect(html).toBe(`<h1>{"count":2}</h1>`);
+  });
+});
+
+describe("Regression - client buildPath does not corrupt :id inside :id2", () => {
+  test("a :id param never overwrites a literal :id2 segment", async () => {
+    const app = prince();
+    app.get("/files/:id2", (req) => ({ id2: req.params!.id2 }));
+
+    const server = Bun.serve({ port: 0, fetch: app.fetch.bind(app) });
+    const base = `http://localhost:${server.port}`;
+
+    type Contract = {
+      "GET /files/:id2": { params: { id2: string }; response: { id2: string } };
+    };
+    const client = createClient<Contract>(base);
+
+    // Passing an unrelated { id } value must not clobber the :id2 segment.
+    const data = await client.get("/files/:id2", {
+      params: ({ id: "1", id2: "9" } as any) as { id2: string },
+    });
+    expect(data.id2).toBe("9");
+
+    server.stop();
   });
 });

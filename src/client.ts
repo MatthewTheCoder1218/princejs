@@ -82,9 +82,12 @@ type MutateOpts<D> = ParamsType<D> extends Record<string, never>
 
 function buildPath(pattern: string, params?: Record<string, string>): string {
   if (!params) return pattern;
+  const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   let out = pattern;
   for (const [k, v] of Object.entries(params)) {
-    out = out.replace(`:${k}`, encodeURIComponent(v));
+    // Only replace `:param` when it's a full path segment placeholder (followed
+    // by "/", "?", "#", or end) — so `:id` never corrupts a literal `:id2`.
+    out = out.replace(new RegExp(`:${escapeRegExp(k)}(?=[/?#]|$)`), encodeURIComponent(v));
   }
   return out;
 }

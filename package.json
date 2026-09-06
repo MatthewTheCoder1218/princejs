@@ -1,6 +1,6 @@
 {
   "name": "princejs",
-  "version": "2.2.4",
+  "version": "2.3.0",
   "description": "An easy and fast backend framework that is among the top three — by a 13yo developer, for developers.",
   "main": "dist/prince.js",
   "types": "dist/prince.d.ts",
@@ -10,49 +10,72 @@
   },
   "exports": {
     ".": {
+      "types": "./dist/prince.d.ts",
       "import": "./dist/prince.js",
-      "types": "./dist/prince.d.ts"
+      "require": "./dist/prince.cjs",
+      "default": "./dist/prince.js"
     },
     "./middleware": {
+      "types": "./dist/middleware.d.ts",
       "import": "./dist/middleware.js",
-      "types": "./dist/middleware.d.ts"
+      "require": "./dist/middleware.cjs",
+      "default": "./dist/middleware.js"
     },
     "./helpers": {
+      "types": "./dist/helpers.d.ts",
       "import": "./dist/helpers.js",
-      "types": "./dist/helpers.d.ts"
+      "require": "./dist/helpers.cjs",
+      "default": "./dist/helpers.js"
     },
     "./scheduler": {
+      "types": "./dist/scheduler.d.ts",
       "import": "./dist/scheduler.js",
-      "types": "./dist/scheduler.d.ts"
+      "require": "./dist/scheduler.cjs",
+      "default": "./dist/scheduler.js"
     },
     "./jsx": {
+      "types": "./dist/jsx.d.ts",
       "import": "./dist/jsx.js",
-      "types": "./dist/jsx.d.ts"
+      "require": "./dist/jsx.cjs",
+      "default": "./dist/jsx.js"
     },
     "./db": {
+      "types": "./dist/db.d.ts",
       "import": "./dist/db.js",
-      "types": "./dist/db.d.ts"
+      "require": "./dist/db.cjs",
+      "default": "./dist/db.js"
     },
     "./vercel": {
+      "types": "./dist/adapters/vercel.d.ts",
       "import": "./dist/adapters/vercel.js",
-      "types": "./dist/adapters/vercel.d.ts"
+      "require": "./dist/adapters/vercel.cjs",
+      "default": "./dist/adapters/vercel.js"
     },
     "./cloudflare": {
+      "types": "./dist/adapters/cloudflare.d.ts",
       "import": "./dist/adapters/cloudflare.js",
-      "types": "./dist/adapters/cloudflare.d.ts"
+      "require": "./dist/adapters/cloudflare.cjs",
+      "default": "./dist/adapters/cloudflare.js"
     },
     "./deno": {
+      "types": "./dist/adapters/deno.d.ts",
       "import": "./dist/adapters/deno.js",
-      "types": "./dist/adapters/deno.d.ts"
+      "require": "./dist/adapters/deno.cjs",
+      "default": "./dist/adapters/deno.js"
     },
     "./node": {
+      "types": "./dist/adapters/node.d.ts",
       "import": "./dist/adapters/node.js",
-      "types": "./dist/adapters/node.d.ts"
+      "require": "./dist/adapters/node.cjs",
+      "default": "./dist/adapters/node.js"
     },
     "./client": {
+      "types": "./dist/client.d.ts",
       "import": "./dist/client.js",
-      "types": "./dist/client.d.ts"
-    }
+      "require": "./dist/client.cjs",
+      "default": "./dist/client.js"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
@@ -60,9 +83,11 @@
     "LICENSE"
   ],
   "scripts": {
-    "build:js": "bun build src/prince.ts --outdir dist --target bun --external zod --external jose && bun build src/middleware.ts --outdir dist --target bun && bun build src/helpers.ts --outdir dist --target bun && bun build src/scheduler.ts --outdir dist --target bun && bun build bin/create.ts --outdir dist --target bun && bun build src/jsx.ts --outdir dist --target bun && bun build src/db.ts --outdir dist --target bun --format esm && bun build src/client.ts --outdir dist --format esm && bun build src/adapters/vercel.ts --outdir dist/adapters --format esm && bun build src/adapters/cloudflare.ts --outdir dist/adapters --format esm && bun build src/adapters/deno.ts --outdir dist/adapters --format esm",
+    "build:js": "bun build src/prince.ts --outdir dist --target bun --external zod --external jose && bun build src/middleware.ts --outdir dist --target bun --external zod --external jose && bun build src/helpers.ts --outdir dist --target bun && bun build src/scheduler.ts --outdir dist --target bun && bun build bin/create.ts --outdir dist --target bun && bun build src/jsx.ts --outdir dist --target bun && bun build src/db.ts --outdir dist --target bun --format esm && bun build src/client.ts --outdir dist --format esm && bun build src/adapters/vercel.ts --outdir dist/adapters --format esm && bun build src/adapters/cloudflare.ts --outdir dist/adapters --format esm && bun build src/adapters/deno.ts --outdir dist/adapters --format esm && bun build src/adapters/node.ts --outdir dist/adapters --format esm",
+    "build:cjs": "bun build src/prince.ts --outfile dist/prince.cjs --target node --format cjs --external zod --external jose && bun build src/middleware.ts --outfile dist/middleware.cjs --target node --format cjs --external zod --external jose && bun build src/helpers.ts --outfile dist/helpers.cjs --target node --format cjs && bun build src/scheduler.ts --outfile dist/scheduler.cjs --target node --format cjs && bun build src/jsx.ts --outfile dist/jsx.cjs --target node --format cjs && bun build src/db.ts --outfile dist/db.cjs --target node --format cjs && bun build src/client.ts --outfile dist/client.cjs --target node --format cjs && bun build src/adapters/vercel.ts --outfile dist/adapters/vercel.cjs --target node --format cjs && bun build src/adapters/cloudflare.ts --outfile dist/adapters/cloudflare.cjs --target node --format cjs && bun build src/adapters/deno.ts --outfile dist/adapters/deno.cjs --target node --format cjs && bun build src/adapters/node.ts --outfile dist/adapters/node.cjs --target node --format cjs",
     "build:types": "tsc --emitDeclarationOnly --skipLibCheck",
-    "build": "bun run build:js && bun run build:types",
+    "build": "bun run build:js && bun run build:cjs && bun run build:types",
+    "prepare": "bun run build",
     "prepublishOnly": "bun run build",
     "test": "bun test",
     "test:watch": "bun test --watch"
@@ -105,21 +130,10 @@
   "devDependencies": {
     "@types/bun": "^1.3.2",
     "bun-types": "latest",
-    "typescript": "^5.9.3",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
     "zod": "^4.1.12",
     "jose": "^6.1.2"
-  },
-  "peerDependencies": {
-    "zod": "^4.1.12",
-    "jose": "^6.1.2"
-  },
-  "peerDependenciesMeta": {
-    "zod": {
-      "optional": true
-    },
-    "jose": {
-      "optional": true
-    }
-  },
-  "dependencies": {}
+  }
 }
