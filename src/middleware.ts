@@ -1,10 +1,26 @@
 // princejs/middleware.ts
 import type { PrinceRequest } from "./prince";
-import { z } from "zod";
-import { jwtVerify, SignJWT } from "jose";
+import type { z } from "zod";
 import { createHmac, randomUUID } from "node:crypto";
 import { extname, normalize, resolve } from "node:path";
 import { readFile } from "node:fs/promises";
+
+// Optional runtime deps are lazy-loaded so a plain `npm install princejs` stays
+// dependency-free. Using a feature that needs `jose` without installing it
+// throws a clear "install this package" error instead of a cryptic import crash.
+let joseModule: any;
+const loadJose = async (feature: string) => {
+  if (joseModule) return joseModule;
+  try {
+    joseModule = await import("jose");
+    return joseModule;
+  } catch {
+    throw new Error(
+      `princejs: ${feature} uses the "jose" package, which is not installed.\n` +
+      `Install it with:  npm install jose    (or: bun add jose)`
+    );
+  }
+};
 
 const normalizePath = (p: string) => normalize(resolve(p).replace(/\\/g, "/")).replace(/\/$/, "");
 type Next = () => Promise<Response | undefined>;
@@ -127,6 +143,7 @@ export const cors = (origin: string = 'http://localhost:3000') => {
 // === JWT ===
 // 🔒 FIXED: Added algorithm parameter and improved error handling
 export const signJWT = async (payload: any, secret: Uint8Array, expiresIn: string, alg: string = 'HS256') => {
+  const { SignJWT } = await loadJose("signJWT()");
   const jwt = await new SignJWT(payload)
     .setProtectedHeader({ alg })
     .setIssuedAt()
@@ -138,6 +155,7 @@ export const signJWT = async (payload: any, secret: Uint8Array, expiresIn: strin
 
 export const jwt = (key: Uint8Array, options?: { algorithms?: string[] }) => {
   const algorithms = options?.algorithms ?? ["HS256", "HS512"];
+  const jose = loadJose("jwt()");
   return async (req: PrinceRequest, next: Next) => {
     const auth = req.headers.get("authorization");
     
@@ -147,6 +165,7 @@ export const jwt = (key: Uint8Array, options?: { algorithms?: string[] }) => {
       const token = auth.slice(7).trim();
 
       try {
+        const { jwtVerify } = await jose;
         const { payload } = await jwtVerify(token, key, {
           algorithms: algorithms as any,
         });
@@ -626,15 +645,16 @@ export const serveStatic = (root: string) => {
 
 // === JWKS / JWK AUTH ===
 // Extends jwt() to also accept a JWKS URL string for Auth0, Clerk, Supabase etc.
-import { createRemoteJWKSet } from "jose";
 
 export const jwks = (jwksUrl: string, options?: { algorithms?: string[] }) => {
-  const JWKS = createRemoteJWKSet(new URL(jwksUrl));
+  let JWKS: any;
   return async (req: PrinceRequest, next: Next) => {
     const auth = req.headers.get("authorization");
     req.user = undefined;
     if (auth?.startsWith("Bearer ")) {
       const token = auth.slice(7).trim();
+      const { jwtVerify, createRemoteJWKSet } = await loadJose("jwks()");
+      JWKS ??= createRemoteJWKSet(new URL(jwksUrl));
       try {
         const { payload } = await jwtVerify(token, JWKS, {
           algorithms: (options?.algorithms ?? ["RS256", "RS512", "ES256", "ES512"]) as any,

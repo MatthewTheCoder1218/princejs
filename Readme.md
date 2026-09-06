@@ -28,7 +28,15 @@ Benchmarked with `oha -c 100 -z 30s` on Windows 10:
 | Fastify | 15,519 | 16,434 |
 | Express | 13,138 | 13,458 |
 
-> PrinceJS is **2.3× faster than Express**, matches Hono head-to-head, and sits at approximately 5kB gzipped — loads in approximately 100ms on a slow 3G connection.
+> PrinceJS is **2.3× faster than Express**, matches Hono head-to-head, and ships with **zero runtime dependencies**.
+
+**Bundle size** (main entry, minified + gzipped):
+
+| Package | Minified | Minified + Gzipped |
+|---------|---------:|-------------------:|
+| **PrinceJS** | **16 kB** | **5.5 kB** |
+
+> That's the complete framework — core + middleware — measured the same way as your own size report.
 
 ---
 
@@ -938,7 +946,9 @@ bun add princejs
 npm install princejs
 ```
 
-> `zod` and `jose` are installed automatically — no extra setup required.
+> **Zero runtime dependencies.** `zod` and `jose` are optional installs that are lazy-loaded only when you use the features that need them:
+> - `validate()`, `guard()`, and zod schemas in `openapi()` use whatever `zod` you already import to build your schemas — nothing extra to install.
+> - `jwt()`, `signJWT()`, and `jwks()` print a one-line install command (`npm install jose`) the first time you use them if `jose` isn't installed. Nothing else requires it, so a plain `npm install princejs` stays tiny.
 
 **Run it on other runtimes too:**
 

@@ -2,7 +2,7 @@
 /// <reference types="bun-types" />
 import type { OpenAPIBuilder, ScalarOptions } from "./scheduler";
 import { openapi as buildOpenAPI, renderScalarHtml } from "./scheduler";
-import { z } from "zod";
+import type { z } from "zod";
 
 type Next = () => Promise<Response>;
 type Middleware = (req: PrinceRequest, next: Next) => Promise<Response | undefined> | Response | undefined;
@@ -188,14 +188,32 @@ function detectIP(req: Request): string {
 
 // ─── Zod → JSON Schema converter ────────────────────────────────────────────
 // Lightweight recursive converter — covers the common cases without pulling in
-// the full zod-to-json-schema package.
+// the full zod-to-json-schema package. Duck-types the schema so it works with
+// zod v3 and v4 without princejs ever importing zod at runtime — users pass in
+// their own zod schemas, so zod stays an optional install.
+
+const ZOD_KIND_MAP: Record<string, string> = {
+  ZodString: "string",   ZodNumber: "number",   ZodBoolean: "boolean",  ZodNull: "null",
+  ZodLiteral: "literal", ZodEnum: "enum",       ZodArray: "array",      ZodRecord: "record",
+  ZodObject: "object",   ZodUnion: "union",     ZodIntersection: "intersection",
+  ZodOptional: "optional", ZodNullable: "nullable", ZodDefault: "default",
+  ZodDate: "date", ZodBigInt: "bigint", ZodAny: "any", ZodUnknown: "unknown",
+};
+const OPTIONAL_KINDS = ["optional", "nullable", "default"];
+
+const zodKind = (schema: any): string => {
+  const d = schema?._def ?? {};
+  const v4d = schema?._zod?.def ?? {};
+  const raw: string = d?.typeName ?? d?.type ?? v4d?.type ?? "";
+  return ZOD_KIND_MAP[raw] ?? raw;
+};
 
 function zodToJsonSchema(schema: z.ZodTypeAny): Record<string, unknown> {
   const d = (schema as any)._def;
-  const typeName: string = d?.typeName ?? d?.type ?? "";
+  const kind = zodKind(schema);
 
   // ── String ───────────────────────────────────────────────────────────────
-  if (schema instanceof z.ZodString || typeName === "ZodString") {
+  if (kind === "string") {
     const s: any = { type: "string" };
     const checks: any[] = d.checks ?? [];
     for (const c of checks) {
@@ -221,7 +239,7 @@ function zodToJsonSchema(schema: z.ZodTypeAny): Record<string, unknown> {
   }
 
   // ── Number ───────────────────────────────────────────────────────────────
-  if (schema instanceof z.ZodNumber || typeName === "ZodNumber") {
+  if (kind === "number") {
     const s: any = { type: "number" };
     const checks: any[] = d.checks ?? [];
     for (const c of checks) {
@@ -241,17 +259,17 @@ function zodToJsonSchema(schema: z.ZodTypeAny): Record<string, unknown> {
   }
 
   // ── Boolean ──────────────────────────────────────────────────────────────
-  if (schema instanceof z.ZodBoolean || typeName === "ZodBoolean") return { type: "boolean" };
-  if (schema instanceof z.ZodNull    || typeName === "ZodNull")    return { type: "null" };
+  if (kind === "boolean") return { type: "boolean" };
+  if (kind === "null")    return { type: "null" };
 
   // ── Literal ──────────────────────────────────────────────────────────────
-  if (schema instanceof z.ZodLiteral || typeName === "ZodLiteral") {
+  if (kind === "literal") {
     const val = d.value ?? d.values?.[0];
     return { enum: [val] };
   }
 
   // ── Enum ─────────────────────────────────────────────────────────────────
-  if (schema instanceof z.ZodEnum || typeName === "ZodEnum") {
+  if (kind === "enum" || kind === "nativeEnum") {
     // v3: _def.values = ["a","b"]  |  v4: _def.entries = {a:"a",b:"b"} or _def.options
     const vals = d.values
       ?? (d.entries ? Object.values(d.entries) : undefined)
@@ -261,54 +279,49 @@ function zodToJsonSchema(schema: z.ZodTypeAny): Record<string, unknown> {
   }
 
   // ── Array ─────────────────────────────────────────────────────────────────
-  if (schema instanceof z.ZodArray || typeName === "ZodArray") {
+  if (kind === "array") {
     const items = d.element ?? d.type ?? d.items;
     return { type: "array", items: items ? zodToJsonSchema(items) : {} };
   }
 
   // ── Optional / Nullable ──────────────────────────────────────────────────
-  if (schema instanceof z.ZodOptional || typeName === "ZodOptional" ||
-      schema instanceof z.ZodNullable || typeName === "ZodNullable") {
+  if (kind === "optional" || kind === "nullable") {
     return zodToJsonSchema(d.innerType ?? d.type);
   }
 
   // ── Default ──────────────────────────────────────────────────────────────
-  if (schema instanceof z.ZodDefault || typeName === "ZodDefault") {
+  if (kind === "default") {
     const inner = zodToJsonSchema(d.innerType ?? d.type);
     const dv = d.defaultValue ?? d.default;
     return { ...inner, default: typeof dv === "function" ? dv() : dv };
   }
 
   // ── Object ───────────────────────────────────────────────────────────────
-  if (schema instanceof z.ZodObject || typeName === "ZodObject") {
+  if (kind === "object") {
     // v3: shape is a plain object  |  v4: shape may also be a plain object
     const shape: Record<string, z.ZodTypeAny> = d.shape ?? {};
     const properties: Record<string, unknown> = {};
     const required: string[] = [];
     for (const [key, val] of Object.entries(shape)) {
       const v = val as z.ZodTypeAny;
-      const vd = (v as any)._def;
-      const vType = vd?.typeName ?? vd?.type ?? "";
       properties[key] = zodToJsonSchema(v);
-      const isOptional = v instanceof z.ZodOptional || vType === "ZodOptional"
-        || v instanceof z.ZodDefault  || vType === "ZodDefault";
-      if (!isOptional) required.push(key);
+      if (!OPTIONAL_KINDS.includes(zodKind(v))) required.push(key);
     }
     return { type: "object", properties, ...(required.length ? { required } : {}) };
   }
 
   // ── Union ─────────────────────────────────────────────────────────────────
-  if (schema instanceof z.ZodUnion || typeName === "ZodUnion") {
+  if (kind === "union") {
     return { oneOf: (d.options ?? []).map(zodToJsonSchema) };
   }
 
   // ── Intersection ──────────────────────────────────────────────────────────
-  if (schema instanceof z.ZodIntersection || typeName === "ZodIntersection") {
+  if (kind === "intersection") {
     return { allOf: [d.left, d.right].map(zodToJsonSchema) };
   }
 
   // ── Record ────────────────────────────────────────────────────────────────
-  if (schema instanceof z.ZodRecord || typeName === "ZodRecord") {
+  if (kind === "record") {
     // v3: _def.valueType                        (two-arg: key schema + value schema)
     // v4: _def.keyType only for single-arg      z.record(ValueSchema) → keyType IS the value schema
     //     _def.keyType + _def.valueType for      z.record(KeySchema, ValueSchema)
@@ -328,9 +341,7 @@ function zodObjectToQueryParams(schema: z.ZodObject<any>): Record<string, unknow
   const shape: Record<string, z.ZodTypeAny> = d.shape ?? {};
   return Object.entries(shape).map(([name, val]) => {
     const v = val as z.ZodTypeAny;
-    const vTypeName = (v as any)._def?.typeName ?? (v as any)._def?.type ?? "";
-    const isOptional = v instanceof z.ZodOptional || vTypeName === "ZodOptional"
-      || v instanceof z.ZodDefault || vTypeName === "ZodDefault";
+    const isOptional = OPTIONAL_KINDS.includes(zodKind(v));
     return {
       name,
       in: "query",
