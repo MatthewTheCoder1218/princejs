@@ -166,6 +166,33 @@ const page = Html(
 
 ---
 
+## 🚀 Demo App: URL Shortener
+
+Want to see it all working together? The repo ships a complete, runnable URL shortener — real app, not a toy:
+
+- Shorten long URLs into `pr.in/xxxxxx` links
+- SQLite storage (`bun:sqlite`) with a click counter per link
+- Rate limiting (10 req/min), zod input validation, request ID
+- Auto-generated Scalar OpenAPI docs at `/docs`
+- A styled homepage built with the JSX components above
+
+```bash
+bun demo/shortener/index.ts
+# open http://localhost:3000
+```
+
+```
+POST /api/links        { url: "https://example.com/foo" } → { code, shortUrl, clicks }
+GET  /:code            → 302 redirect to the original URL
+GET  /api/links/:code  → link info + click count
+GET  /api/stats        → total links + top 5 by clicks
+GET  /docs             → Scalar OpenAPI UI
+```
+
+The full source is at [`demo/shortener/index.ts`](demo/shortener/index.ts) — routing, middleware, SQLite, validation, and JSX SSR all in one file. Use it as a template for your own app.
+
+---
+
 ## 🍪 Cookies & 🌐 IP Detection
 
 ### Reading Cookies
