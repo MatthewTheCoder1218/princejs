@@ -83,6 +83,89 @@ app.listen(3000);
 
 ---
 
+## 🎨 JSX / SSR
+
+Write HTML with typed helper components — works both as direct function calls and with JSX syntax in `.tsx` files.
+
+```ts
+import {
+  render, Html, Head, Title, Meta, Style, Script,
+  Body, Header, Main, Footer, Nav,
+  H1, H2, P, Div, A, Span,
+  Form, Input, Button, Select, Option, Textarea,
+  Ul, Li, Br, Hr, Img,
+} from "princejs/jsx";
+
+// Direct function calls — works in .ts files
+const page = Html(
+  Head(
+    Meta({ charset: "utf-8" }),
+    Meta({ name: "viewport", content: "width=device-width, initial-scale=1" }),
+    Title("My App"),
+    Style(`body { font-family: system-ui; }`),
+  ),
+  Body(
+    Header(Nav(A({ href: "/" }, "Home"))),
+    Main(
+      H1("Hello World"),
+      P("Welcome to PrinceJS!"),
+    ),
+    Footer(P("Built with PrinceJS")),
+  ),
+);
+
+app.get("/", () => render("<!DOCTYPE html>" + page));
+```
+
+**Attribute normalization** — use JSX-friendly names, they convert automatically:
+
+| JSX attribute | HTML output |
+|---|---|
+| `className="box"` | `class="box"` |
+| `htmlFor="email"` | `for="email"` |
+| `tabIndex={0}` | `tabindex="0"` |
+| `httpEquiv="refresh"` | `http-equiv="refresh"` |
+| `required={true}` | `required` |
+| `disabled={false}` | *(omitted)* |
+
+**Layouts** — layouts are just functions that compose pages. No special API:
+
+```ts
+const BaseLayout = ({ title, children }) =>
+  Html(
+    Head(Meta({ charset: "utf-8" }), Title(title)),
+    Body(Div({ class: "container" }, children)),
+  );
+
+app.get("/", () => render(
+  BaseLayout({
+    title: "Home",
+    children: [
+      H1("Home Page"),
+      P("Welcome!"),
+    ],
+  })
+));
+```
+
+**Partials** — reusable components are just functions:
+
+```ts
+const navbar = () =>
+  Nav(
+    A({ href: "/" }, "Home"),
+    A({ href: "/about" }, "About"),
+    A({ href: "/docs" }, "Docs"),
+  );
+
+const page = Html(
+  Head(Title("My App")),
+  Body(navbar(), Main(H1("Content"))),
+);
+```
+
+---
+
 ## 🍪 Cookies & 🌐 IP Detection
 
 ### Reading Cookies
@@ -815,7 +898,7 @@ import {
 } from "princejs/middleware";
 import { cache, upload, sse, stream, sanitize, validateEnv, errorResponse, successResponse } from "princejs/helpers";
 import { cron } from "princejs/scheduler";
-import { Html, Head, Body, H1, P, render } from "princejs/jsx";
+import { Html, Head, Title, Meta, Style, Body, Main, H1, P, Div, Form, Input, Button, render } from "princejs/jsx";
 import { db } from "princejs/db";
 import { z } from "zod";
 
@@ -848,8 +931,25 @@ app.use(compress());
 app.use(csrf());
 
 // ── JSX SSR ───────────────────────────────────────────────
-const Page = () => Html(Head("Home"), Body(H1("Hello World"), P("Welcome!")));
-app.get("/", () => render(Page()));
+const BaseLayout = ({ title, children }) =>
+  Html(
+    Head(Meta({ charset: "utf-8" }), Title(title), Style(`body{font-family:system-ui}`)),
+    Body(Main(children)),
+  );
+
+const HomePage = BaseLayout({
+  title: "Home",
+  children: [
+    H1("Hello World"),
+    P("Welcome to PrinceJS!"),
+    Form({ method: "POST", action: "/submit" },
+      Input({ type: "text", name: "name", placeholder: "Your name", required: true }),
+      Button({ type: "submit" }, "Submit"),
+    ),
+  ],
+});
+
+app.get("/", () => render("<!DOCTYPE html>" + HomePage));
 
 // ── Cookies & IP ──────────────────────────────────────────
 app.post("/login", (req) =>

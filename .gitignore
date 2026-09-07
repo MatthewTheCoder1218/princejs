@@ -51,6 +51,7 @@ node_modules/
 jest.config.ts
 jest-*.json
 coverage/
+*.sqlite
 
 # Misc
 *.tmp

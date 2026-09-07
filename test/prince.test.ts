@@ -4489,9 +4489,9 @@ describe("Regression - JSX object children are not dropped", () => {
     expect(html).toBe(`<div>{"name":"Alice"}<p>hi</p></div>`);
   });
 
-  test("H1 renders an object child instead of dropping it", () => {
+  test("H1 renders an object as props when passed as single arg", () => {
     const html = H1({ count: 2 });
-    expect(html).toBe(`<h1>{"count":2}</h1>`);
+    expect(html).toBe(`<h1 count="2"></h1>`);
   });
 });
 
