@@ -34,7 +34,7 @@ Benchmarked with `oha -c 100 -z 30s` on Windows 10:
 
 | Package | Minified | Minified + Gzipped |
 |---------|---------:|-------------------:|
-| **PrinceJS** | **16 kB** | **5.5 kB** |
+| **PrinceJS** | **17.2 kB** | **5.7 kB** |
 
 > That's the complete framework — core + middleware — measured the same way as your own size report.
 
