@@ -420,6 +420,7 @@ export class Prince {
   private rawRoutes: RouteEntry[] = [];
   private middlewares: Middleware[] = [];
   private errorHandler?: (err: any, req: PrinceRequest) => Response;
+  private notFoundHandler?: (req: PrinceRequest) => HandlerResult;
   private wsRoutes: Record<string, WebSocketHandler> = {};
   private router: RadixNode | null = null;
   private staticRoutes: Map<string, RouteHandler> = new Map();
@@ -470,6 +471,18 @@ export class Prince {
 
   error(fn: (err: any, req: PrinceRequest) => Response) {
     this.errorHandler = fn;
+    return this;
+  }
+
+  /**
+   * Custom 404 handler — runs when no route matches. Same return rules as a
+   * route handler (objects become JSON, strings become text).
+   *
+   * @example
+   * app.notFound(() => ({ error: "Nothing here" }));
+   */
+  notFound(handler: (req: PrinceRequest) => HandlerResult) {
+    this.notFoundHandler = handler;
     return this;
   }
 
@@ -933,6 +946,13 @@ async handleFetch(req: Request): Promise<Response> {
         const trimmed = pathname.slice(0, -1) + (search ? `?${search}` : "");
         return new Response(null, { status: trim.__trimTrailingSlash, headers: { Location: trimmed } });
       }
+      if (this.notFoundHandler) {
+        const res = await this.notFoundHandler(r);
+        if (res instanceof Response) return res;
+        if (typeof res === "string") return new Response(res, { status: 404 });
+        if (res instanceof Uint8Array) return new Response(res, { status: 404 });
+        return this.json(res, 404);
+      }
       return this.json({ error: "Not Found" }, 404);
     }
 
@@ -1081,8 +1101,53 @@ async handleFetch(req: Request): Promise<Response> {
         "Use the node/vercel/cloudflare/deno adapters instead, or run under bun."
       );
     }
-    
-    Bun.serve({
+
+    // ── WebSocket rooms ────────────────────────────────────────────────────
+    // Zero overhead until a socket actually calls join()/broadcast(). Rooms
+    // are only created on demand; plain ws handlers never touch this map.
+    const rooms = new Map<string, Set<any>>();
+
+    const decorate = (ws: any) => {
+      const myRooms = new Set<string>();
+      ws.__princeRooms = myRooms;
+      ws.join = (room: string) => {
+        let set = rooms.get(room);
+        if (!set) { set = new Set(); rooms.set(room, set); }
+        set.add(ws);
+        myRooms.add(room);
+        return ws;
+      };
+      ws.leave = (room: string) => {
+        rooms.get(room)?.delete(ws);
+        myRooms.delete(room);
+        return ws;
+      };
+      ws.broadcast = (room: string, data: any) => {
+        const set = rooms.get(room);
+        if (!set) return;
+        const payload = typeof data === "string" ? data : JSON.stringify(data);
+        for (const peer of set) if (peer !== ws) peer.send(payload);
+      };
+      ws.broadcastAll = (data: any) => {
+        const payload = typeof data === "string" ? data : JSON.stringify(data);
+        const seen = new Set<any>();
+        for (const set of rooms.values()) {
+          for (const peer of set) if (peer !== ws && !seen.has(peer)) { seen.add(peer); peer.send(payload); }
+        }
+      };
+      ws.roomSize = (room: string) => rooms.get(room)?.size ?? 0;
+      return ws;
+    };
+
+    const leaveAllRooms = (ws: any) => {
+      if (!ws?.__princeRooms) return;
+      for (const room of ws.__princeRooms) {
+        rooms.get(room)?.delete(ws);
+      }
+      ws.__princeRooms.clear();
+    };
+
+    const server = Bun.serve({
       port,
       fetch: (req, server) => {
         // Use fast path extract — avoids new URL() for the WS check
@@ -1098,6 +1163,7 @@ async handleFetch(req: Request): Promise<Response> {
       },
       websocket: {
         open(ws) {
+          decorate(ws);
           const path = (ws.data as any)?.path;
           if (path && self.wsRoutes[path]?.open) {
             self.wsRoutes[path].open!(ws);
@@ -1110,6 +1176,7 @@ async handleFetch(req: Request): Promise<Response> {
           }
         },
         close(ws, code, reason) {
+          leaveAllRooms(ws);
           const path = (ws.data as any)?.path;
           if (path && self.wsRoutes[path]?.close) {
             self.wsRoutes[path].close!(ws, code, reason);
@@ -1125,6 +1192,7 @@ async handleFetch(req: Request): Promise<Response> {
     });
 
     console.log(`🚀 PrinceJS running on http://localhost:${port}`);
+    return server;
   }
 }
 

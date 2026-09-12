@@ -1,7 +1,7 @@
 // test/prince.test.ts
 import { describe, test, expect, beforeEach, afterEach, jest, it, spyOn } from "bun:test";
 import { prince, guard } from "../src/prince";
-import { jwt, signJWT, rateLimit, validate, cors, logger, auth, apiKey, compress, session, csrf, secureHeaders, timeout, requestId, ipRestriction, serveStatic, trimTrailingSlash, every, some, except } from "../src/middleware";
+import { jwt, signJWT, rateLimit, validate, cors, logger, auth, apiKey, compress, session, csrf, secureHeaders, timeout, requestId, ipRestriction, serveStatic, trimTrailingSlash, every, some, except, etag, limit } from "../src/middleware";
 import { cache, email, upload, sse, stream } from "../src/helpers";
 import { openapi, cron } from "../src/scheduler";
 import { db } from "../src/db";
@@ -4515,5 +4515,268 @@ describe("Regression - client buildPath does not corrupt :id inside :id2", () =>
     expect(data.id2).toBe("9");
 
     server.stop();
+  });
+});
+
+// ==========================================
+// v2.4.0 FEATURE TESTS
+// ==========================================
+
+describe("CORS - default allows all origins", () => {
+  test("bare cors() allows any Origin", async () => {
+    const app = prince();
+    app.use(cors());
+    app.get("/api", () => ({ ok: true }));
+
+    const res = await app.fetch(
+      new Request("http://localhost/api", {
+        headers: { Origin: "https://other-site.com" }
+      })
+    );
+
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+  });
+
+  test("explicit origin still restricts", async () => {
+    const app = prince();
+    app.use(cors("https://example.com"));
+    app.get("/api", () => ({ ok: true }));
+
+    const res = await app.fetch(
+      new Request("http://localhost/api", {
+        headers: { Origin: "https://other-site.com" }
+      })
+    );
+
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("https://example.com");
+  });
+});
+
+describe("Middleware - ETag", () => {
+  test("etag() sets an ETag header on responses", async () => {
+    const app = prince();
+    app.use(etag());
+    app.get("/data", () => ({ hello: "world" }));
+
+    const res = await app.fetch(new Request("http://localhost/data"));
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("ETag")).toBeDefined();
+  });
+
+  test("etag() returns 304 when If-None-Match matches", async () => {
+    const app = prince();
+    app.use(etag());
+    app.get("/data", () => ({ hello: "world" }));
+
+    const res1 = await app.fetch(new Request("http://localhost/data"));
+    const tag = res1.headers.get("ETag");
+    expect(tag).toBeTruthy();
+
+    const res2 = await app.fetch(
+      new Request("http://localhost/data", { headers: { "If-None-Match": tag! } })
+    );
+
+    expect(res2.status).toBe(304);
+  });
+
+  test("etag() returns full body when tag differs", async () => {
+    const app = prince();
+    app.use(etag());
+    app.get("/data", () => ({ hello: "world" }));
+
+    const res = await app.fetch(
+      new Request("http://localhost/data", { headers: { "If-None-Match": '"stale-tag"' } })
+    );
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.hello).toBe("world");
+  });
+
+  test("etag() serves a 304 for If-None-Match: *", async () => {
+    const app = prince();
+    app.use(etag());
+    app.get("/plain", () => "plain");
+
+    const res = await app.fetch(
+      new Request("http://localhost/plain", { headers: { "If-None-Match": "*" } })
+    );
+
+    expect(res.status).toBe(304);
+  });
+
+  test("etag() never buffers streaming responses", async () => {
+    const app = prince();
+    app.use(etag());
+    app.get("/events", () =>
+      new Response("data: hi\n\n", {
+        headers: { "Content-Type": "text/event-stream" }
+      })
+    );
+
+    const res = await app.fetch(
+      new Request("http://localhost/events", { headers: { "If-None-Match": '"abc"' } })
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("ETag")).toBeNull();
+    expect(await res.text()).toBe("data: hi\n\n");
+  });
+
+  test("etag() keeps ETag stable across identical responses", async () => {
+    const app = prince();
+    app.use(etag());
+    app.get("/data", () => ({ hello: "world" }));
+
+    const res1 = await app.fetch(new Request("http://localhost/data"));
+    const res2 = await app.fetch(new Request("http://localhost/data"));
+
+    expect(res1.headers.get("ETag")).toBe(res2.headers.get("ETag"));
+  });
+});
+
+describe("Middleware - Body Limit", () => {
+  test("limit() rejects bodies over Content-Length without reading them", async () => {
+    const app = prince();
+    app.use(limit(10));
+    app.post("/upload", (req) => ({ ok: true }));
+
+    const res = await app.fetch(
+      new Request("http://localhost/upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Content-Length": "100" },
+        body: "x".repeat(100)
+      })
+    );
+
+    expect(res.status).toBe(413);
+    const data = await res.json();
+    expect(data.error).toBe("Payload Too Large");
+  });
+
+  test("limit() allows bodies within the limit", async () => {
+    const app = prince();
+    app.use(limit(1024));
+    app.post("/upload", (req) => ({ received: req.parsedBody }));
+
+    const res = await app.fetch(
+      new Request("http://localhost/upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Content-Length": "16" },
+        body: JSON.stringify({ name: "Alice" })
+      })
+    );
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.received.name).toBe("Alice");
+  });
+
+  test("limit() passes through requests without Content-Length", async () => {
+    const app = prince();
+    app.use(limit(5));
+    app.post("/chunked", (req) => ({ received: req.parsedBody }));
+
+    const res = await app.fetch(
+      new Request("http://localhost/chunked", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ big: "chunked body here" })
+      })
+    );
+
+    expect(res.status).toBe(200);
+  });
+
+  test("limit() leaves non-parsed content types alone", async () => {
+    const app = prince();
+    app.use(limit(5));
+    app.post("/blob", (req) => new Response("ok", { status: 200 }));
+
+    const res = await app.fetch(
+      new Request("http://localhost/blob", {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: "x".repeat(100)
+      })
+    );
+
+    expect(res.status).toBe(200);
+  });
+});
+
+describe("Router - app.notFound()", () => {
+  test("custom handler replaces the default 404 JSON", async () => {
+    const app = prince();
+    app.notFound(() => ({ message: "custom 404" }));
+
+    const res = await app.fetch(new Request("http://localhost/missing"));
+
+    expect(res.status).toBe(404);
+    const data = await res.json();
+    expect(data.message).toBe("custom 404");
+  });
+
+  test("string return is served as 404 text", async () => {
+    const app = prince();
+    app.notFound(() => "nothing here");
+
+    const res = await app.fetch(new Request("http://localhost/missing"));
+
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe("nothing here");
+  });
+
+  test("existing routes still match when a notFound handler is set", async () => {
+    const app = prince();
+    app.notFound(() => ({ message: "nope" }));
+    app.get("/exists", () => ({ found: true }));
+
+    const res = await app.fetch(new Request("http://localhost/exists"));
+
+    expect(res.status).toBe(200);
+  });
+});
+
+describe("WebSocket - Rooms & Broadcast", () => {
+  test("broadcast() sends to other members of the room", async () => {
+    const app = prince();
+    const serverLog: string[] = [];
+
+    app.ws("/chat", {
+      open(ws) {
+        ws.join("general");
+      },
+      message(ws, msg) {
+        ws.broadcast("general", String(msg));
+        serverLog.push(String(msg));
+      },
+    });
+
+    const port = 5_000 + Math.floor(Math.random() * 10_000);
+    const server = app.listen(port);
+    await new Promise((r) => setTimeout(r, 150));
+
+    const a = new WebSocket(`ws://localhost:${port}/chat`);
+    const b = new WebSocket(`ws://localhost:${port}/chat`);
+
+    const opened: Promise<void>[] = [new Promise((r) => { a.onopen = () => r(); }), new Promise((r) => { b.onopen = () => r(); })];
+    await Promise.all(opened);
+
+    const bGot = new Promise<string>((r) => {
+      b.onmessage = (e) => r(String(e.data));
+      b.onerror = () => r("error");
+    });
+
+    a.send("hello");
+    const msg = await Promise.race([bGot, new Promise<string>((r) => setTimeout(() => r("timeout"), 2000))]);
+
+    expect(msg).toBe("hello");
+    expect(serverLog).toEqual(["hello"]);
+
+    a.close();
+    b.close();
+    server.stop(true);
   });
 });

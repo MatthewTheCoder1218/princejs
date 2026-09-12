@@ -3,7 +3,7 @@
 # 👑 PrinceJS
 
 **Ultra-clean, modern & minimal Bun web framework.**  
-Built by a 13-year-old Nigerian developer. Among the top three in performance.
+Built by a 14-year-old Nigerian developer (started at 13 — every line since). Among the top three in performance.
 
 [![npm version](https://img.shields.io/npm/v/princejs?style=flat-square)](https://www.npmjs.com/package/princejs)
 [![GitHub stars](https://img.shields.io/github/stars/MatthewTheCoder1218/princejs?style=flat-square)](https://github.com/MatthewTheCoder1218/princejs)
@@ -69,8 +69,8 @@ app.listen(3000);
 
 | Feature | Import |
 |---------|--------|
-| Routing, Route Grouping, WebSockets, OpenAPI, Plugins, Lifecycle Hooks, Cookies, IP | `princejs` |
-| CORS, Logger, JWT, JWKS, Auth, Rate Limit, Validate, Compress, Session, API Key, Secure Headers, CSRF Protection, Timeout, Request ID, IP Restriction, Static Files, Trim Trailing Slash, Middleware Combinators (`every`, `some`, `except`), `guard()` | `princejs/middleware` |
+| Routing, Route Grouping, WebSockets (rooms & broadcast), Custom 404, OpenAPI, Plugins, Lifecycle Hooks, Cookies, IP | `princejs` |
+| CORS, Logger, JWT, JWKS, Auth, Rate Limit, Validate, Compress, Session, API Key, Secure Headers, CSRF Protection, Timeout, Request ID, IP Restriction, Static Files, Trim Trailing Slash, ETag / 304 Caching, Body Size Limit, Middleware Combinators (`every`, `some`, `except`), `guard()` | `princejs/middleware` |
 | File Uploads, SSE, Streaming, In-memory Cache, Input Sanitization, Environment Validation, Response Helpers | `princejs/helpers` |
 | Cron Scheduler | `princejs/scheduler` |
 | JSX / SSR | `princejs/jsx` |
@@ -190,6 +190,24 @@ GET  /docs             → Scalar OpenAPI UI
 ```
 
 The full source is at [`demo/shortener/index.ts`](demo/shortener/index.ts) — routing, middleware, SQLite, validation, and JSX SSR all in one file. Use it as a template for your own app.
+
+---
+
+## 🌐 CORS
+
+`cors()` allows requests from **any origin** out of the box — no config needed. Pass an explicit origin when you want to restrict.
+
+```ts
+import { cors } from "princejs/middleware";
+
+const app = prince();
+app.use(cors());                       // allow ALL origins
+app.use(cors("https://myapp.com"));    // allow one origin only
+```
+
+> ⚠️ **v2.3.2 and earlier pinned the default to `http://localhost:3000`**, silently blocking every real client. That's fixed — bare `cors()` is now wide open by default. If you relied on the old restrictive default, pass your origin explicitly.
+
+Preflights (`OPTIONS`) get a 204 with `Access-Control-Max-Age: 86400`; actual responses get the CORS headers merged in.
 
 ---
 
@@ -662,6 +680,44 @@ Runs on Bun, Node, Deno and Cloudflare Workers, and is path-traversal safe — `
 
 ---
 
+## 🏷️ ETag / 304 Conditional Requests
+
+Serve `304 Not Modified` for cached resources and save bandwidth. Buffers only cacheable `GET`/`HEAD` text responses — streaming and already-encoded bodies are never touched:
+
+```ts
+import { etag } from "princejs/middleware";
+
+app.use(etag());
+
+app.get("/api/report", () => ({ report: "..." }));
+// → 200 + ETag: "3f9a7c..."
+// → 304 (empty body) when the client re-sends its ETag via If-None-Match
+```
+
+- Every cacheable 2xx response gets a fast, stable `ETag` header (a 64-bit hash — no string allocations, streams are skipped).
+- A matching `If-None-Match` (or `*`) turns the response into an empty **304**.
+- `etag({ weak: true })` prefixes tags with `W/` for byte-identical-or-weaker caches.
+
+---
+
+## 📏 Request Body Limit
+
+Reject oversized payloads before they're processed. The check is **O(1)** — it reads the `Content-Length` header and never touches the body:
+
+```ts
+import { limit } from "princejs/middleware";
+
+app.use(limit(10_000));                // ≤ 10 kB
+app.post("/upload", limit(1_000_000), (req) => ...); // per-route limit
+// → 413 { "error": "Payload Too Large" } when exceeded
+
+app.use(limit(10_000, "Way too big")); // custom message
+```
+
+> PrinceJS parses JSON/form bodies before the middleware chain runs, so `Content-Length` is the enforcement point. For chunked requests without a `Content-Length`, pair this with Bun's built-in `bodySizeLimit` in your server layer.
+
+---
+
 ## 🌊 Streaming
 
 Stream chunked responses for AI/LLM output, large payloads, or anything that generates data over time:
@@ -691,6 +747,45 @@ app.get("/events", stream(async function*(req) {
   }
 }, { contentType: "application/x-ndjson" }));
 ```
+
+---
+
+## 💬 WebSockets — Rooms & Broadcast
+
+Broadcast to groups of connections without any external pub/sub. Rooms are created on demand — **zero overhead** unless a socket actually joins one.
+
+```ts
+const app = prince();
+
+app.ws("/chat", {
+  open: (ws) => {
+    ws.join("general");                 // join a room (auto-creates it)
+    ws.send("Welcome to #general!");
+  },
+  message: (ws, msg) => {
+    ws.broadcast("general", msg);       // send to everyone else in the room
+    // ws.broadcastAll(msg);            // send to every connection
+    // ws.broadcast("general", { user: ws.user, msg }); // objects → JSON automatically
+  },
+  close: (ws) => {
+    // ws.leave("general");             // could leave manually — cleanups are automatic on close
+  },
+});
+
+app.listen(3000);
+```
+
+**Room API on every websocket:**
+
+| Method | Does |
+|---|---|
+| `ws.join(room)` | Adds the socket to a room (creating it if needed) |
+| `ws.leave(room)` | Removes the socket from a room |
+| `ws.broadcast(room, data)` | Sends `data` to all **other** sockets in the room (strings sent as-is, objects as JSON) |
+| `ws.broadcastAll(data)` | Sends to every connected socket except self |
+| `ws.roomSize(room)` | Number of sockets currently in a room |
+
+Sockets are automatically removed from every room they're in when they disconnect.
 
 ---
 
@@ -831,6 +926,20 @@ app.listen(3000);
 
 ---
 
+## 🛑 Custom 404
+
+Replace the default `{ "error": "Not Found" }` with your own handler. Same return rules as a route handler — objects become JSON, strings become text:
+
+```ts
+app.notFound(() => ({ message: "Nothing here, friend" }));
+app.notFound(() => render(NotFoundPage())); // JSX/HTML pages work too
+app.notFound((req) => new Response("Page not found", { status: 404 }));
+```
+
+The custom response is always served with status `404`. Routes that exist still win — this only runs when nothing matches.
+
+---
+
 ## 🔒 End-to-End Type Safety
 
 ```ts
@@ -922,6 +1031,8 @@ import {
   some,
   except,
   guard,
+  etag,
+  limit,
 } from "princejs/middleware";
 import { cache, upload, sse, stream, sanitize, validateEnv, errorResponse, successResponse } from "princejs/helpers";
 import { cron } from "princejs/scheduler";
@@ -956,6 +1067,11 @@ app.use(jwt(SECRET));
 app.use(session({ secret: "session-secret" }));
 app.use(compress());
 app.use(csrf());
+app.use(etag());
+app.use(limit(100_000));
+
+// ── Custom 404 ────────────────────────────────────────────
+app.notFound(() => renderPage("<!DOCTYPE html>" + H1("404 — nothing here")));
 
 // ── JSX SSR ───────────────────────────────────────────────
 const BaseLayout = ({ title, children }) =>
@@ -999,8 +1115,8 @@ app.get("/users", () => users.query("SELECT * FROM users"));
 
 // ── WebSockets ────────────────────────────────────────────
 app.ws("/chat", {
-  open:    (ws) => ws.send("Welcome!"),
-  message: (ws, msg) => ws.send(`Echo: ${sanitize(msg as string, 'text')}`),
+  open:    (ws) => { ws.join("general"); ws.send("Welcome!"); },
+  message: (ws, msg) => ws.broadcast("general", sanitize(msg as string, 'text')),
   close:   (ws) => console.log("disconnected"),
 });
 

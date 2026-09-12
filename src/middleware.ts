@@ -105,16 +105,23 @@ export const logger = (options: LoggerOptions = {}) => {
 };
 
 // === CORS ===
-// 🔒 FIXED: Default to strict mode instead of '*' for better security
-export const cors = (origin: string = 'http://localhost:3000') => {
+// 🐛 FIXED: bare `cors()` now allows ALL origins — the old default pinned every
+// production app to `http://localhost:3000` and silently blocked real clients.
+// Pass an explicit origin (or "*") to restrict. Headers are precomputed once at
+// registration time so the per-request hot path only copies them.
+export const cors = (origin: string = "*") => {
+  const allowOrigin = origin;
+  const allowMethods = 'GET, POST, PUT, DELETE, PATCH, OPTIONS';
+  const allowHeaders = 'Content-Type, Authorization';
+
   return async (req: any, next: Function) => {
     if (req.method === 'OPTIONS') {
       return new Response(null, {
         status: 204,
         headers: {
-          'Access-Control-Allow-Origin': origin,
-          'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, PATCH, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+          'Access-Control-Allow-Origin': allowOrigin,
+          'Access-Control-Allow-Methods': allowMethods,
+          'Access-Control-Allow-Headers': allowHeaders,
           'Access-Control-Max-Age': '86400',
         }
       });
@@ -125,9 +132,9 @@ export const cors = (origin: string = 'http://localhost:3000') => {
     // Add CORS headers to actual response
     if (response) {
       const headers = new Headers(response.headers);
-      headers.set('Access-Control-Allow-Origin', origin);
-      headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-      headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      headers.set('Access-Control-Allow-Origin', allowOrigin);
+      headers.set('Access-Control-Allow-Methods', allowMethods);
+      headers.set('Access-Control-Allow-Headers', allowHeaders);
       
       return new Response(response.body, {
         status: response.status,
@@ -137,6 +144,81 @@ export const cors = (origin: string = 'http://localhost:3000') => {
     }
     
     return response;
+  };
+};
+
+// === ETag / CONDITIONAL REQUESTS ===
+// 🚀 OPTIMIZED: streams and encoded/binary bodies are never buffered — only
+// cacheable 2xx GET/HEAD text bodies get hashed, and the hash is a fast O(n)
+// two-round trip (cyrb53) with no string allocations. A matching
+// If-None-Match turns a full 200 into an empty 304.
+const hashBody = (buf: Uint8Array): string => {
+  let h1 = 0xdeadbeef ^ 0x2c6;
+  let h2 = 0x41c6ce57 ^ 0x2c6;
+  for (let i = 0; i < buf.length; i++) {
+    const ch = buf[i];
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (h2 >>> 0).toString(16).padStart(8, "0") + (h1 >>> 0).toString(16).padStart(8, "0");
+};
+
+export const etag = (options?: { weak?: boolean }) => {
+  const weak = options?.weak ?? false;
+  return async (req: PrinceRequest, next: Next) => {
+    const response = await next();
+    if (!response) return response;
+    // Only cacheable GET/HEAD 200s — never touch mutations, errors, or redirects.
+    if (req.method !== "GET" && req.method !== "HEAD") return response;
+    if (response.status !== 200) return response;
+    // NEVER buffer streaming or already-encoded bodies.
+    const ct = response.headers.get("content-type") || "";
+    if (ct.includes("event-stream") || ct.includes("octet-stream") || ct.startsWith("multipart/")) return response;
+    if (response.headers.get("content-encoding")) return response;
+
+    const existing = response.headers.get("etag");
+    let tag = existing ?? "";
+    let newBody: any = null;
+    if (existing) {
+      newBody = response.body;
+    } else {
+      const buf = await response.arrayBuffer();
+      tag = (weak ? "W/" : "") + `"${hashBody(new Uint8Array(buf))}"`;
+      newBody = buf;
+    }
+
+    const ifNoneMatch = req.headers.get("if-none-match");
+    if (ifNoneMatch === "*" || (ifNoneMatch && (ifNoneMatch === tag || ifNoneMatch.split(",").some((t) => t.trim() === tag)))) {
+      return new Response(null, { status: 304, headers: { ETag: tag } });
+    }
+
+    if (existing) return response;
+    const headers = new Headers(response.headers);
+    headers.set("ETag", tag);
+    return new Response(newBody, { status: response.status, statusText: response.statusText, headers });
+  };
+};
+
+// === BODY SIZE LIMIT ===
+// 🚀 OPTIMIZED: O(1) — checks Content-Length without ever reading the body.
+// PrinceJS parses JSON/form before the middleware chain runs, so the header is
+// the honest enforcement point for buffered bodies; this stays allocation-free.
+// For chunked (no Content-Length) streams, pair with Bun's native
+// `bodySizeLimit` in the server layer.
+export const limit = (maxBytes: number, message = "Payload Too Large") => {
+  const tooLarge = () => new Response(
+    JSON.stringify({ error: message }),
+    { status: 413, headers: { "Content-Type": "application/json" } }
+  );
+
+  return async (req: PrinceRequest, next: Next) => {
+    const cl = req.headers.get("content-length");
+    if (!cl) return next();
+    const size = parseInt(cl, 10);
+    if (!Number.isNaN(size) && size > maxBytes) return tooLarge();
+    return next();
   };
 };
 
