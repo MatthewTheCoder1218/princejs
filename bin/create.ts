@@ -64,7 +64,7 @@ app.get("/hello/:name", (req) => {
 });
 
 app.post("/echo", (req) => {
-  return { echo: req.body };
+  return { echo: req.parsedBody };
 });
 
 // WebSocket example

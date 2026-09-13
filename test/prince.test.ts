@@ -4780,3 +4780,54 @@ describe("WebSocket - Rooms & Broadcast", () => {
     server.stop(true);
   });
 });
+
+describe("Regression - lazy request properties", () => {
+  test("req.query / req.cookies / req.ip can be assigned without throwing", async () => {
+    const app = prince();
+    app.get("/assign", (req) => {
+      // In strict (ESM) mode, assigning to a getter-only accessor threw
+      // TypeError. Middleware that writes these properties must work.
+      const qs = new URLSearchParams({ assigned: "1" });
+      req.query = qs;
+      req.cookies = { sid: "abc" };
+      req.ip = "9.9.9.9";
+      return { query: req.query.get("assigned"), cookie: req.cookies.sid, ip: req.ip };
+    });
+
+    const res = await app.fetch(new Request("http://localhost/assign"));
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data).toEqual({ query: "1", cookie: "abc", ip: "9.9.9.9" });
+  });
+
+  test("lazy accessors still compute on first read", async () => {
+    const app = prince();
+    app.get("/lazy", (req) => {
+      expect(req.query.get("a")).toBe("1");
+      expect(req.ip).toBe("127.0.0.1");
+      return { ok: true };
+    });
+
+    const res = await app.fetch(new Request("http://localhost/lazy?a=1"));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+  });
+});
+
+describe("Regression - multiple Set-Cookie headers", () => {
+  test("two cookies become separate Set-Cookie header lines", async () => {
+    const app = prince();
+    app.get("/cookies", (req) => {
+      const rb = app.response();
+      rb.cookie("a", "1", { httpOnly: true });
+      rb.cookie("b", "2", { path: "/", maxAge: 60 });
+      return rb;
+    });
+
+    const res = await app.fetch(new Request("http://localhost/cookies"));
+    const setCookies = res.headers.getSetCookie();
+    expect(setCookies.length).toBe(2);
+    expect(setCookies[0]).toContain("a=1");
+    expect(setCookies[1]).toContain("b=2");
+  });
+});

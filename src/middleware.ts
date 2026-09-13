@@ -23,6 +23,15 @@ const loadJose = async (feature: string) => {
 };
 
 const normalizePath = (p: string) => normalize(resolve(p).replace(/\\/g, "/")).replace(/\/$/, "");
+// Fast pathname extract — avoids the full URL object for logging.
+const extractPathname = (url: string) => {
+  const ss = url.indexOf("//");
+  if (ss === -1) return "/";
+  const ps = url.indexOf("/", ss + 2);
+  if (ps === -1) return "/";
+  const qi = url.indexOf("?", ps);
+  return qi === -1 ? url.slice(ps) : url.slice(ps, qi);
+};
 type Next = () => Promise<Response | undefined>;
 type HandlerReturn = Response | { [key: string]: any } | undefined;
 
@@ -70,7 +79,7 @@ export const logger = (options: LoggerOptions = {}) => {
 
       const log: any = {
         method: req.method,
-        path: new URL(req.url).pathname,
+        path: extractPathname(req.url),
         status: res.status,
         duration: `${duration}ms`
       };
@@ -79,8 +88,8 @@ export const logger = (options: LoggerOptions = {}) => {
         log.headers = Object.fromEntries(req.headers.entries());
       }
 
-      if (logBody && req.body) {
-        log.body = req.body;
+      if (logBody && req.parsedBody) {
+        log.body = req.parsedBody;
       }
 
       console.log(log);
@@ -93,7 +102,7 @@ export const logger = (options: LoggerOptions = {}) => {
       } else {
         console.error({
           method: req.method,
-          path: new URL(req.url).pathname,
+          path: extractPathname(req.url),
           error: String(error),
           duration: `${duration}ms`
         });
@@ -176,6 +185,9 @@ export const etag = (options?: { weak?: boolean }) => {
     // NEVER buffer streaming or already-encoded bodies.
     const ct = response.headers.get("content-type") || "";
     if (ct.includes("event-stream") || ct.includes("octet-stream") || ct.startsWith("multipart/")) return response;
+    // Skip opaque binary types — hashing these wastes a full-body buffer with
+    // negligible cache benefit (images/fonts are immutable by filename).
+    if (ct.startsWith("image/") || ct.startsWith("audio/") || ct.startsWith("video/") || ct.startsWith("font/")) return response;
     if (response.headers.get("content-encoding")) return response;
 
     const existing = response.headers.get("etag");
@@ -700,7 +712,7 @@ export const serveStatic = (root: string) => {
   const base = normalizePath(root);
   return async (req: PrinceRequest, next: Next) => {
     if (req.method !== "GET" && req.method !== "HEAD") return next();
-    const pathname = decodeURIComponent(new URL(req.url).pathname);
+    const pathname = decodeURIComponent(extractPathname(req.url));
     const filePath = normalizePath(pathname);
     // Guard against path traversal ("/../secret.txt" must stay inside root).
     if (!filePath.startsWith(base)) return next();

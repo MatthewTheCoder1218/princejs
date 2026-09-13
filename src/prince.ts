@@ -71,7 +71,7 @@ export type PrincePlugin<TOptions = any> = (
 
 class ResponseBuilder {
   private _status = 200;
-  private _headers: Record<string, string> = {};
+  private _headers: Record<string, string | string[]> = {};
   private _body: any = null;
 
   status(code: number) {
@@ -117,14 +117,64 @@ class ResponseBuilder {
     if (options?.httpOnly) cookieStr += "; HttpOnly";
     if (options?.sameSite) cookieStr += `; SameSite=${options.sameSite}`;
     const existing = this._headers["Set-Cookie"];
-    this._headers["Set-Cookie"] = existing ? `${existing}, ${cookieStr}` : cookieStr;
+    if (Array.isArray(existing)) {
+      existing.push(cookieStr);
+    } else if (existing) {
+      this._headers["Set-Cookie"] = [existing, cookieStr];
+    } else {
+      this._headers["Set-Cookie"] = cookieStr;
+    }
     return this;
   }
 
   build() {
-    return new Response(this._body, { status: this._status, headers: this._headers });
+    const h = new Headers();
+    for (const [key, value] of Object.entries(this._headers)) {
+      if (Array.isArray(value)) {
+        for (const v of value) h.append(key, v);
+      } else if (value !== undefined) {
+        h.set(key, value);
+      }
+    }
+    return new Response(this._body, { status: this._status, headers: h });
   }
 }
+
+// Shared JSON response headers — safe to reuse across Response instances since
+// Bun copies plain-object headers on construction (never mutates the source).
+const JSON_RESPONSE_HEADERS = { "Content-Type": "application/json" };
+const jsonResponse = (data: any, status = 200) =>
+  new Response(JSON.stringify(data), { status, headers: JSON_RESPONSE_HEADERS });
+
+// Write methods — Set avoids the per-request array allocation in executeHandler.
+const WRITE_METHODS = new Set(["POST", "PUT", "PATCH"]);
+
+// Normalize any handler/middleware result into a Response.
+const toResponse = (res: HandlerResult): Response => {
+  if (res instanceof Response) return res;
+  if (res instanceof ResponseBuilder) return res.build();
+  if (typeof res === "string") return new Response(res);
+  if (res instanceof Uint8Array) return new Response(res);
+  return jsonResponse(res);
+};
+
+// Lazy per-request property that (a) computes on first read and replaces itself
+// with a plain value, and (b) accepts direct assignment without throwing in
+// strict/ESM mode — the old getter-only defineProperty crashed on middleware
+// writing `req.query = ...`.
+const lazyProp = <T>(req: any, name: string, compute: () => T) => {
+  Object.defineProperty(req, name, {
+    configurable: true,
+    get() {
+      const value = compute();
+      Object.defineProperty(req, name, { value, writable: true, configurable: true });
+      return value;
+    },
+    set(value: T) {
+      Object.defineProperty(req, name, { value, writable: true, configurable: true });
+    },
+  });
+};
 
 // ─── Cookie helpers ────────────────────────────────────────────────────────
 function parseCookies(cookieHeader: string): Record<string, string> {
@@ -427,6 +477,8 @@ export class Prince {
   private staticMiddlewares: Map<string, Middleware[]> = new Map();
   // Pre-composed [globalMiddlewares..., routeMiddlewares...] stored at registration time
   private staticComposed: Map<string, Middleware[]> = new Map();
+  // O(1) 405 detection: pathname → methods registered statically at that path
+  private staticAllowed: Map<string, Set<string>> = new Map();
   private routeCache = new Map<string, { 
     handler: RouteHandler; 
     params: Record<string, string>;
@@ -507,10 +559,7 @@ export class Prince {
   }
 
   json(data: any, status = 200) {
-    return new Response(JSON.stringify(data), {
-      status,
-      headers: { "Content-Type": "application/json" }
-    });
+    return new Response(JSON.stringify(data), { status, headers: JSON_RESPONSE_HEADERS });
   }
 
   response() {
@@ -588,6 +637,9 @@ export class Prince {
       if (middlewares.length > 0) {
         this.staticMiddlewares.set(staticKey, middlewares);
       }
+      let methods = this.staticAllowed.get(path);
+      if (!methods) { methods = new Set(); this.staticAllowed.set(path, methods); }
+      methods.add(method);
     }
     
     this.routeCache.clear();
@@ -687,26 +739,22 @@ export class Prince {
       return this.routeCache.get(cacheKey)!;
     }
 
-    // Static route fast path — O(1) map lookup
-    const staticHandler = this.staticRoutes.get(cacheKey);
-    if (staticHandler) {
-      // Use pre-baked composed array if available (post-listen), otherwise compose now
-      const composed = this.staticComposed.get(cacheKey)
-        ?? this.composeMW(this.staticMiddlewares.get(cacheKey) ?? []);
-      const result = { handler: staticHandler, params: {}, middlewares: composed };
-      this.routeCache.set(cacheKey, result);
-      return result;
-    }
-
-    // 405 check for static routes: another method exists at this exact path
-    if (this.staticRoutes.size > 0) {
-      const methods = ["GET","POST","PUT","PATCH","DELETE","OPTIONS"];
-      const allowed = methods.filter(m => m !== method && this.staticRoutes.has(`${m}:${pathname}`));
-      if (allowed.length > 0) {
-        const r = { handler: null as any, params: {}, middlewares: [], allowedMethods: allowed };
-        this.routeCache.set(cacheKey, r);
-        return r;
+    // Static route — one O(1) lookup covers both the hit and the 405 case.
+    const allowed = this.staticAllowed.get(pathname);
+    if (allowed) {
+      if (allowed.has(method)) {
+        const staticHandler = this.staticRoutes.get(cacheKey)!;
+        // Use pre-baked composed array if available (post-listen), otherwise compose now
+        const composed = this.staticComposed.get(cacheKey)
+          ?? this.composeMW(this.staticMiddlewares.get(cacheKey) ?? []);
+        const result = { handler: staticHandler, params: {}, middlewares: composed };
+        this.routeCache.set(cacheKey, result);
+        return result;
       }
+      // Path exists but this method isn't registered on it → 405
+      const r = { handler: null as any, params: {}, middlewares: [], allowedMethods: [...allowed] };
+      this.routeCache.set(cacheKey, r);
+      return r;
     }
 
     // Radix tree lookup — 405 detected inside matchRoute via allowedMethods
@@ -851,34 +899,18 @@ export class Prince {
   ): Promise<Response> {
     req.params = params;
     // Lazy URLSearchParams — only parsed if handler accesses req.query
-    let _query: URLSearchParams | undefined;
-    Object.defineProperty(req, "query", {
-      get() { return _query ??= new URLSearchParams(search); },
-      configurable: true,
-    });
+    lazyProp(req, "query", () => new URLSearchParams(search));
 
     // Lazy cookies — only parsed if handler accesses req.cookies
-    Object.defineProperty(req, "cookies", {
-      get() {
-        const val = parseCookies(req.headers.get("cookie") ?? "");
-        Object.defineProperty(req, "cookies", { value: val, configurable: true });
-        return val;
-      },
-      configurable: true,
-    });
+    lazyProp<Record<string, string>>(req, "cookies", () =>
+      parseCookies(req.headers.get("cookie") ?? "")
+    );
 
     // Lazy IP — only resolved if handler accesses req.ip
-    Object.defineProperty(req, "ip", {
-      get() {
-        const val = detectIP(req);
-        Object.defineProperty(req, "ip", { value: val, configurable: true });
-        return val;
-      },
-      configurable: true,
-    });
+    lazyProp<string>(req, "ip", () => detectIP(req));
 
     // Only parse body if it hasn't been parsed by middleware already
-    if (["POST", "PUT", "PATCH"].includes(req.method) && !req.parsedBody) {
+    if (WRITE_METHODS.has(req.method) && !req.parsedBody) {
       const parsed = await this.parseBody(req);
       if (parsed) {
         if (typeof parsed === "object" && "files" in parsed && "fields" in parsed) {
@@ -897,23 +929,23 @@ export class Prince {
 
     // routeMiddlewares is already composed ([globals..., routeMW...]) — no spread needed
     const allMiddlewares = routeMiddlewares;
-    
-    let i = 0;
-    const next = async (): Promise<Response> => {
-      while (i < allMiddlewares.length) {
-        const result = await allMiddlewares[i++](req, next);
-        if (result instanceof Response) return result;
-      }
 
-      const res = await handler(req);
-      if (res instanceof Response) return res;
-      if (res instanceof ResponseBuilder) return res.build();
-      if (typeof res === "string") return new Response(res);
-      if (res instanceof Uint8Array) return new Response(res);
-      return this.json(res);
-    };
+    let response: Response;
+    if (allMiddlewares.length === 0) {
+      // Fast path — no middleware: avoid the `next` closure entirely.
+      response = toResponse(await handler(req));
+    } else {
+      let i = 0;
+      const next = async (): Promise<Response> => {
+        while (i < allMiddlewares.length) {
+          const result = await allMiddlewares[i++](req, next);
+          if (result instanceof Response) return result;
+        }
+        return toResponse(await handler(req));
+      };
 
-    const response = await next();
+      response = await next();
+    }
 
     // Call onAfterHandle hooks — only clone if there are hooks registered
     if (this.onAfterHandleHooks.length > 0) {
@@ -925,9 +957,9 @@ export class Prince {
     return response;
   }
 
-async handleFetch(req: Request): Promise<Response> {
+async handleFetch(req: Request, pathname?: string): Promise<Response> {
     const rawUrl = req.url;
-    const pathname = extractPathname(rawUrl);
+    const pn = pathname ?? extractPathname(rawUrl);
     const r = req as PrinceRequest;
     const method = req.method;
 
@@ -936,14 +968,14 @@ async handleFetch(req: Request): Promise<Response> {
       await hook(r);
     }
 
-    const routeMatch = this.findRoute(method, pathname);
+    const routeMatch = this.findRoute(method, pn);
     
     if (!routeMatch) {
       // Trailing-slash redirect only runs when trimTrailingSlash() was registered.
       const trim = (this as any).middlewares.find((m: any) => m.__trimTrailingSlash);
-      if (trim && pathname.length > 1 && pathname.endsWith("/")) {
+      if (trim && pn.length > 1 && pn.endsWith("/")) {
         const search = extractSearch(rawUrl);
-        const trimmed = pathname.slice(0, -1) + (search ? `?${search}` : "");
+        const trimmed = pn.slice(0, -1) + (search ? `?${search}` : "");
         return new Response(null, { status: trim.__trimTrailingSlash, headers: { Location: trimmed } });
       }
       if (this.notFoundHandler) {
@@ -970,18 +1002,18 @@ async handleFetch(req: Request): Promise<Response> {
     }
 
     const search = extractSearch(rawUrl);
-    return this.executeHandler(r, routeMatch.handler, routeMatch.params, search, routeMatch.middlewares, method, pathname);
+    return this.executeHandler(r, routeMatch.handler, routeMatch.params, search, routeMatch.middlewares, method, pn);
   }
 
-  async fetch(req: Request): Promise<Response> {
-    // Extract pathname once for error handler fallback — no full URL parse needed
-    const rawUrl = req.url;
+  // Internal dispatch: Bun.serve's fetch callback passes (request, server), so
+  // the public fetch() must stay single-arg. _serve reuses a pre-extracted
+  // pathname in both the handler and the error fallback.
+  private async _serve(req: Request, pathname: string): Promise<Response> {
     const method = req.method;
 
     try {
-      return await this.handleFetch(req);
+      return await this.handleFetch(req, pathname);
     } catch (err) {
-      const pathname = extractPathname(rawUrl);
       // Call onError hooks
       for (const hook of this.onErrorHooks) {
         await hook(err, req as PrinceRequest, pathname, method);
@@ -995,6 +1027,10 @@ async handleFetch(req: Request): Promise<Response> {
       }
       return this.json({ error: "Internal Server Error" }, 500);
     }
+  }
+
+  async fetch(req: Request): Promise<Response> {
+    return this._serve(req, extractPathname(req.url));
   }
 
   openapi(
@@ -1159,7 +1195,7 @@ async handleFetch(req: Request): Promise<Response> {
           return;
         }
         
-        return self.fetch(req);
+        return self._serve(req, pathname);
       },
       websocket: {
         open(ws) {

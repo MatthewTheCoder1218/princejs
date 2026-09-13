@@ -18,23 +18,23 @@ Built by a 14-year-old Nigerian developer (started at 13 — every line since). 
 
 ## ⚡ Performance
 
-Benchmarked with `oha -c 100 -z 30s` on a clean Windows 10 machine — all five frameworks ran in one session on Bun 1.4.2, answering the same JSON route:
+Benchmarked with `oha -c 100 -z 30s` on a clean Windows 10 machine — one warmed server per framework, 5 sustained reps each, averaged. All five then ran on Bun 1.4.2, answering the same JSON route:
 
 | Framework | Avg Req/s | Peak Req/s |
 |-----------|----------:|-----------:|
-| Elysia | 26,633 | 40,749 |
-| Hono | 23,985 | 36,534 |
-| **PrinceJS** | **21,191** | **32,499** |
-| Fastify | 17,532 | 24,170 |
-| Express | 12,913 | 19,723 |
+| Elysia | 27,723 | 45,966 |
+| Hono | 23,317 | 38,983 |
+| **PrinceJS** | **20,984** | **35,582** |
+| Fastify | 16,549 | 25,211 |
+| Express | 13,946 | 22,546 |
 
-> PrinceJS is **1.6× faster than Express**, within 12% of Hono, and ships with **zero runtime dependencies**.
+> PrinceJS is **1.5× faster than Express**, within 10% of Hono, and ships with **zero runtime dependencies**.
 
 **Bundle size** (main entry, minified + gzipped):
 
 | Package | Minified | Minified + Gzipped |
 |---------|---------:|-------------------:|
-| **PrinceJS** | **17.2 kB** | **5.7 kB** |
+| **PrinceJS** | **17.1 kB** | **5.9 kB** |
 
 > That's the complete framework — core + middleware — measured the same way as your own size report.
 
